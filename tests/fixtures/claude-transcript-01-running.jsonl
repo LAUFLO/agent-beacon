@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":"开始任务"},"timestamp":"2030-07-18T07:30:00.000Z","sessionId":"claude-replay"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash"}],"stop_reason":"tool_use"},"timestamp":"2030-07-18T07:30:01.000Z","sessionId":"claude-replay"}

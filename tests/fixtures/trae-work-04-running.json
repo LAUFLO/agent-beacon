@@ -1,0 +1,1 @@
+{"version":3,"sessionId":"trae-work-replay-2","creationDate":1893456007000,"lastMessageDate":1893456008000,"responderUsername":"TRAE Work","requests":[{"requestId":"request-3","message":{"text":"开始新任务"},"response":[{"kind":"progressMessage","content":{"value":"处理中"}}],"modelState":{"value":0},"timestamp":1893456008000}]}

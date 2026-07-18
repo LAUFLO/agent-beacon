@@ -1,0 +1,2 @@
+{"kind":0,"v":{"version":3,"sessionId":"trae-jsonl-session","creationDate":1893456000000,"lastMessageDate":1893456003000,"requests":[]}}
+{"kind":2,"k":["requests"],"v":[{"requestId":"request-jsonl-1","timestamp":1893456001000,"modelState":{"value":1,"completedAt":1893456003000},"response":[{"kind":"confirmation","isUsed":true}]}]}

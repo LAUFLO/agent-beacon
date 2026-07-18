@@ -1,0 +1,4 @@
+{"type":"user","message":{"role":"user","content":"开始任务"},"timestamp":"2030-07-18T07:30:00.000Z","sessionId":"claude-replay"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"任务完成"}],"stop_reason":"end_turn"},"timestamp":"2030-07-18T07:30:03.000Z","sessionId":"claude-replay"}
+{"type":"user","message":{"role":"user","content":"继续新任务"},"timestamp":"2030-07-18T07:30:04.000Z","sessionId":"claude-replay"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash"}],"stop_reason":"tool_use"},"timestamp":"2030-07-18T07:30:05.000Z","sessionId":"claude-replay"}
