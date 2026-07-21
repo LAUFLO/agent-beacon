@@ -1,0 +1,19 @@
+{
+  "version": 3,
+  "sessionId": "trae-order-test",
+  "lastMessageDate": 1784576200000,
+  "requests": [
+    {
+      "requestId": "newer-request",
+      "timestamp": 1784576200000,
+      "response": [{ "kind": "markdownContent", "content": { "value": "输出结果已经整理到目标目录。" } }],
+      "modelState": { "value": 2 }
+    },
+    {
+      "requestId": "older-request-written-last",
+      "timestamp": 1784576100000,
+      "response": [{ "kind": "progressMessage", "status": "running", "content": { "value": "正在处理旧请求" } }],
+      "modelState": { "value": 2 }
+    }
+  ]
+}

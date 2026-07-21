@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const packaged = path.join(here, '..', 'integrations');
 const integrations = fs.existsSync(packaged) ? packaged : path.resolve(here, '..', '..', 'agent-traffic-light', 'integrations');
 const { normalizeClaudeEvent } = require(path.join(integrations, 'claude-hook.cjs'));
+const { writeEvent } = await import(pathToFileURL(path.join(integrations, 'opencode-plugin.js')).href);
 
 assert.equal(normalizeClaudeEvent({ hook_event_name: 'PermissionRequest', session_id: 'c1' }, 1).status, 'attention');
 assert.equal(normalizeClaudeEvent({ hook_event_name: 'Notification', session_id: 'c1', message: 'build complete' }, 2), null);
@@ -18,4 +20,39 @@ assert.equal(normalizeClaudeEvent({ hook_event_name: 'PreToolUse', session_id: '
 assert.equal(normalizeClaudeEvent({ hook_event_name: 'PostToolUse', session_id: 'c1', tool_name: 'Bash' }, 5).status, 'running');
 assert.equal(normalizeClaudeEvent({ hook_event_name: 'StopFailure', session_id: 'c1' }, 4).status, 'complete');
 
-console.log('PASS Claude event filtering');
+const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-beacon-opencode-'));
+const eventFile = path.join(directory, 'opencode-valid-session.json');
+const readRow = () => JSON.parse(fs.readFileSync(eventFile, 'utf8'));
+assert.equal(writeEvent({ type: 'message.updated', properties: { sessionID: 'valid-session' } }, directory), false);
+assert.equal(writeEvent({ type: 'session.status', properties: { status: 'busy' } }, directory), false);
+assert.equal(writeEvent({ type: 'permission.asked', properties: { sessionID: 'x' } }, directory), false);
+assert.equal(fs.readdirSync(directory).length, 0);
+assert.equal(writeEvent({ type: 'session.status', properties: { sessionID: 'valid-session', status: 'busy' } }, directory), true);
+assert.equal(writeEvent({ type: 'question.asked', properties: { sessionID: 'valid-session', requestID: 'question-1', questions: [{}] } }, directory), true);
+assert.equal(readRow().status, 'attention');
+assert.equal(readRow().pendingInteraction.kind, 'question');
+assert.equal(writeEvent({ type: 'session.status', properties: { sessionID: 'valid-session', status: 'busy' } }, directory), false);
+assert.equal(writeEvent({ type: 'session.idle', properties: { sessionID: 'valid-session' } }, directory), false);
+assert.equal(writeEvent({ type: 'tool.execute.before', properties: { sessionID: 'valid-session' } }, directory), false);
+assert.equal(readRow().status, 'attention');
+assert.equal(writeEvent({ type: 'question.replied', properties: { sessionID: 'valid-session', requestID: 'other-question' } }, directory), false);
+assert.equal(readRow().status, 'attention');
+assert.equal(writeEvent({ type: 'question.replied', properties: { sessionID: 'valid-session', requestID: 'question-1' } }, directory), true);
+assert.equal(readRow().status, 'running');
+assert.equal(readRow().pendingInteraction, null);
+assert.equal(writeEvent({ type: 'question.asked', properties: { sessionID: 'valid-session', requestID: 'question-2' } }, directory), true);
+assert.equal(writeEvent({ type: 'question.rejected', properties: { sessionID: 'valid-session', requestID: 'question-2' } }, directory), true);
+assert.equal(readRow().status, 'running');
+assert.equal(writeEvent({ type: 'permission.asked', properties: { sessionID: 'valid-session', requestID: 'permission-1' } }, directory), true);
+assert.equal(readRow().status, 'attention');
+assert.equal(writeEvent({ type: 'session.status', properties: { sessionID: 'valid-session', status: 'running' } }, directory), false);
+assert.equal(readRow().status, 'attention');
+assert.equal(writeEvent({ type: 'permission.replied', properties: { sessionID: 'valid-session', requestID: 'permission-1' } }, directory), true);
+assert.equal(readRow().status, 'running');
+assert.equal(writeEvent({ type: 'session.idle', properties: { sessionID: 'valid-session' } }, directory), true);
+assert.equal(readRow().status, 'complete');
+assert.equal(writeEvent({ type: 'tool.execute.before', properties: { sessionID: 'valid-session' } }, directory), true);
+const row = readRow();
+assert.equal(row.status, 'running');
+
+console.log('PASS OpenCode question/permission attention latch, resolution, filtering, and valid-session enforcement');

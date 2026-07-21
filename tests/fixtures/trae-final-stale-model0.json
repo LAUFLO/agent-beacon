@@ -1,0 +1,20 @@
+{
+  "version": 3,
+  "sessionId": "trae-stale-model-running",
+  "lastMessageDate": 1784597005000,
+  "requests": [
+    {
+      "requestId": "stale-model-running-1",
+      "timestamp": 1784596940000,
+      "response": [
+        {
+          "kind": "markdownContent",
+          "content": {
+            "value": "确认后 5 秒已到，我回来了，相关流程与验证结果均已整理。"
+          }
+        }
+      ],
+      "modelState": { "value": 0 }
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "version": 3,
+  "sessionId": "trae-generic-stale-confirmation",
+  "requests": [
+    {
+      "requestId": "generic-final-2",
+      "timestamp": 1784575100000,
+      "confirmation": { "isUsed": false },
+      "response": [
+        { "kind": "confirmation", "isUsed": false, "content": { "value": "旧确认节点" } },
+        { "kind": "markdownContent", "content": { "value": "好的，修改结果和测试报告已经整理在输出目录。" } }
+      ],
+      "modelState": { "value": 2 }
+    }
+  ]
+}

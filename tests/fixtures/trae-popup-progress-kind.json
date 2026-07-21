@@ -1,0 +1,20 @@
+{
+  "version": 3,
+  "sessionId": "trae-progress-popup",
+  "lastMessageDate": 1784598105000,
+  "requests": [
+    {
+      "requestId": "progress-popup-1",
+      "timestamp": 1784598040000,
+      "response": [
+        {
+          "kind": "progressMessage",
+          "content": {
+            "value": "是否确认继续？确认后我将再等待 5 秒后回复你。等待你的回复。"
+          }
+        }
+      ],
+      "modelState": { "value": 2 }
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "version": 3,
+  "sessionId": "trae-generic-final",
+  "requests": [
+    {
+      "requestId": "generic-final-1",
+      "timestamp": 1784575000000,
+      "response": [
+        { "kind": "markdownContent", "content": { "value": "好的，结果如下：3 个文件均已更新，测试全部通过。" } },
+        { "kind": "progressMessage", "status": "running", "content": { "value": "收到追加要求，正在继续处理" } }
+      ],
+      "modelState": { "value": 2 }
+    }
+  ]
+}

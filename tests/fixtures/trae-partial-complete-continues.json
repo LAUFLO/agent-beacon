@@ -1,0 +1,1 @@
+{"version":3,"sessionId":"trae-partial-continues","creationDate":1893457310000,"lastMessageDate":1893457315000,"responderUsername":"TRAE Work","requests":[{"requestId":"partial-1","message":{"text":"执行多步流程"},"response":[{"kind":"markdownContent","content":{"value":"第一步已完成，接下来继续执行第二步。"}}],"modelState":{"value":2},"timestamp":1893457311000}]}
