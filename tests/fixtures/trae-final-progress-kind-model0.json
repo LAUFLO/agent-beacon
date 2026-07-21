@@ -1,0 +1,20 @@
+{
+  "version": 3,
+  "sessionId": "trae-progress-final",
+  "lastMessageDate": 1784598205000,
+  "requests": [
+    {
+      "requestId": "progress-final-1",
+      "timestamp": 1784598140000,
+      "response": [
+        {
+          "kind": "progressMessage",
+          "content": {
+            "value": "确认后 5 秒已到，我回来了，全流程已顺利完成，一切正常。"
+          }
+        }
+      ],
+      "modelState": { "value": 0 }
+    }
+  ]
+}

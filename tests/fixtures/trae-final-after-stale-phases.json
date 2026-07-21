@@ -1,0 +1,16 @@
+{
+  "version": 3,
+  "sessionId": "trae-stale-phases",
+  "requests": [
+    {
+      "requestId": "request-final",
+      "timestamp": 1784574000000,
+      "response": [
+        { "kind": "progressMessage", "status": "running", "content": { "value": "正在执行最后一步" } },
+        { "kind": "confirmation", "isUsed": false, "content": { "value": "旧的确认卡片" } },
+        { "kind": "markdownContent", "content": { "value": "本次任务已全部完成，一切正常。" } }
+      ],
+      "modelState": { "value": 2 }
+    }
+  ]
+}
