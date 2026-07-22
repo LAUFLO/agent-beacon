@@ -1,0 +1,112 @@
+name: Publish release
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Exact main commit requested by publish.ps1
+        required: true
+        type: string
+
+concurrency:
+  group: agent-beacon-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Validate commit and version
+        id: metadata
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ inputs.commit_sha }}
+        run: |
+          $actualSha = (git rev-parse HEAD).Trim()
+          if ($actualSha -ne $env:EXPECTED_SHA) {
+            throw "main moved: requested $env:EXPECTED_SHA but checked out $actualSha"
+          }
+
+          $match = Select-String -LiteralPath (Join-Path $PWD 'AppInfo.cs') -Pattern 'public const string Version = "([0-9]+\.[0-9]+\.[0-9]+)"' | Select-Object -First 1
+          if (-not $match) { throw 'App version was not found in AppInfo.cs.' }
+          $version = $match.Matches[0].Groups[1].Value
+          $tag = "v$version"
+          $notes = Join-Path $PWD "releases\$tag.md"
+          if (-not (Test-Path -LiteralPath $notes)) { throw "Missing release notes: $notes" }
+
+          git fetch --tags --force
+          git show-ref --verify --quiet "refs/tags/$tag"
+          if ($LASTEXITCODE -eq 0) { throw "Tag $tag already exists. Increase AppInfo.Version before publishing again." }
+          if ($LASTEXITCODE -ne 1) { throw 'Unable to inspect existing tags.' }
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "notes_source=$notes" >> $env:GITHUB_OUTPUT
+
+      - name: Run tests
+        shell: powershell
+        run: |
+          .\tests\Replay-State-Tests.ps1
+          .\tests\Mcp-Protocol-Tests.ps1
+          node .\tests\integration-event-tests.mjs
+          .\tests\Release-Workflow-Tests.ps1
+          .\tests\Ui-Style-Tests.ps1
+
+      - name: Build application
+        shell: powershell
+        run: .\build.ps1 -OutputDirectory (Join-Path $PWD 'artifacts')
+
+      - name: Verify package version
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          $exe = Get-ChildItem -LiteralPath (Join-Path $PWD 'artifacts') -Filter 'Agent-Beacon-*.exe' | Select-Object -First 1
+          if (-not $exe) { throw 'No Agent Beacon EXE was built.' }
+          $builtVersion = $exe.VersionInfo.ProductVersion.Split('+')[0]
+          if ($builtVersion -ne $env:EXPECTED_VERSION) { throw "Built version $builtVersion does not match $env:EXPECTED_VERSION." }
+
+      - name: Prepare release notes with package hash
+        id: notes
+        shell: pwsh
+        env:
+          NOTES_SOURCE: ${{ steps.metadata.outputs.notes_source }}
+          RELEASE_VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          $exe = Get-ChildItem -LiteralPath (Join-Path $PWD 'artifacts') -Filter 'Agent-Beacon-*.exe' | Select-Object -First 1
+          if (-not $exe) { throw 'No Agent Beacon EXE was built.' }
+          $hash = (Get-FileHash -LiteralPath $exe.FullName -Algorithm SHA256).Hash
+          $content = Get-Content -LiteralPath $env:NOTES_SOURCE -Encoding UTF8 -Raw
+          $hashLine = '- SHA-256：`' + $hash + '`'
+          if ($content -match '(?m)^- SHA-256：`[A-Fa-f0-9]+`\s*$') { $content = [regex]::Replace($content, '(?m)^- SHA-256：`[A-Fa-f0-9]+`\s*$', $hashLine) }
+          else { $content = $content.TrimEnd() + "`n`n$hashLine`n" }
+          $rendered = Join-Path $env:RUNNER_TEMP "Agent-Beacon-$env:RELEASE_VERSION-release-notes.md"
+          [IO.File]::WriteAllText($rendered, $content, (New-Object Text.UTF8Encoding($false)))
+          "file=$rendered" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Agent-Beacon-${{ steps.metadata.outputs.version }}
+          path: artifacts/*
+          if-no-files-found: error
+
+      - name: Create tag, release, and upload EXE
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.metadata.outputs.tag }}
+          RELEASE_NOTES: ${{ steps.notes.outputs.file }}
+        run: |
+          $assetPaths = @(Get-ChildItem -LiteralPath (Join-Path $PWD 'artifacts') -File | Select-Object -ExpandProperty FullName)
+          if ($assetPaths.Count -eq 0) { throw 'No release assets were built.' }
+          $arguments = @('release','create',$env:RELEASE_TAG) + $assetPaths + @('--target',$env:GITHUB_SHA,'--title',"Agent Beacon $env:RELEASE_TAG",'--notes-file',$env:RELEASE_NOTES,'--latest')
+          & gh @arguments
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub tag/release creation failed.' }

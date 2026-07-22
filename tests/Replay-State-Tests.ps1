@@ -9,10 +9,11 @@ $openTarget = Join-Path $bridge 'opencode-replay.json'
 New-Item -ItemType Directory -Force -Path (Split-Path $codexTarget), (Split-Path $claudeTarget), $bridge | Out-Null
 $dll = Join-Path $work 'AgentTrafficLight.Tests.dll'
 $mcpExe = Join-Path $work 'Agent-Beacon-MCP.exe'
+$appSources = @('AppInfo.cs','PixelTheme.cs','StateHistory.cs','DesktopFeatures.cs','UpdateService.cs','AgentUi.cs','Integrations.cs','AgentTrafficLight.cs') | ForEach-Object { Join-Path $root $_ }
 
 & 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe' /nologo /target:exe /optimize+ /platform:anycpu /out:$mcpExe /reference:System.dll /reference:System.Core.dll /reference:System.Web.Extensions.dll (Join-Path $root 'TraeMcpHost.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Test MCP helper compilation failed.' }
-& 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe' /nologo /target:library /out:$dll /reference:System.dll /reference:System.Core.dll /reference:System.Drawing.dll /reference:System.Windows.Forms.dll /reference:System.Web.Extensions.dll /reference:'C:\Windows\Microsoft.NET\assembly\GAC_MSIL\UIAutomationClient\v4.0_4.0.0.0__31bf3856ad364e35\UIAutomationClient.dll' /reference:'C:\Windows\Microsoft.NET\assembly\GAC_MSIL\UIAutomationTypes\v4.0_4.0.0.0__31bf3856ad364e35\UIAutomationTypes.dll' ('/resource:' + $mcpExe + ',trae-mcp-host.exe') (Join-Path $root 'AgentTrafficLight.cs')
+& 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe' /nologo /target:library /out:$dll /reference:System.dll /reference:System.Core.dll /reference:System.Drawing.dll /reference:System.Windows.Forms.dll /reference:System.Web.Extensions.dll /reference:'C:\Windows\Microsoft.NET\assembly\GAC_MSIL\UIAutomationClient\v4.0_4.0.0.0__31bf3856ad364e35\UIAutomationClient.dll' /reference:'C:\Windows\Microsoft.NET\assembly\GAC_MSIL\UIAutomationTypes\v4.0_4.0.0.0__31bf3856ad364e35\UIAutomationTypes.dll' ('/resource:' + $mcpExe + ',trae-mcp-host.exe') $appSources
 if ($LASTEXITCODE -ne 0) { throw 'Test assembly compilation failed.' }
 
 $oldHome = $env:AGENT_TRAFFIC_LIGHT_HOME
@@ -136,6 +137,57 @@ if ($ensureTraeMcp.Invoke($null, @($true)) -ne 'updated' -or (Get-FileHash -Lite
 $escapedStableHelper = $stableHelper.Replace('\', '\\')
 [IO.File]::WriteAllText((Join-Path $upgradeDir 'trae-mcp-config.json'), '{"mcpServers":{"agent_beacon":{"command":"' + $escapedStableHelper + '","args":["--mcp-server"]}}}', [Text.Encoding]::UTF8)
 if (-not $isTraeMcpPrepared.Invoke($null, @())) { throw 'TRAE MCP stable configuration was not recognized.' }
+
+$freshness = $integrationType.GetMethod('IsTraeMcpRecent', [Reflection.BindingFlags]'Static,NonPublic,Public')
+$freshNow = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+if (-not $freshness.Invoke($null, @([long]($freshNow - 9 * 60 * 1000), [long]$freshNow)) -or $freshness.Invoke($null, @([long]($freshNow - 11 * 60 * 1000), [long]$freshNow))) { throw 'TRAE MCP freshness window is invalid.' }
+Write-Host 'PASS TRAE MCP recent/stale connection classification'
+
+$settingsType = $assembly.GetType('AgentTrafficLightNative.SettingsData')
+$settings = [Activator]::CreateInstance($settingsType, $true)
+$notificationType = $assembly.GetType('AgentTrafficLightNative.NotificationPolicy')
+$agentEnabled = $notificationType.GetMethod('AgentEnabled', [Reflection.BindingFlags]'Static,NonPublic,Public')
+$setAgent = $notificationType.GetMethod('SetAgent', [Reflection.BindingFlags]'Static,NonPublic,Public')
+if (-not $agentEnabled.Invoke($null, @($settings, 'TRAE'))) { throw 'TRAE notification should be enabled by default.' }
+$setAgent.Invoke($null, @($settings, 'TRAE', $false)) | Out-Null
+if ($agentEnabled.Invoke($null, @($settings, 'TRAE'))) { throw 'Per-agent notification toggle did not persist in settings.' }
+$settingsType.GetField('QuietHoursEnabled', [Reflection.BindingFlags]'Instance,NonPublic,Public').SetValue($settings, $true)
+$settingsType.GetField('QuietStartHour', [Reflection.BindingFlags]'Instance,NonPublic,Public').SetValue($settings, [DateTime]::Now.Hour)
+$settingsType.GetField('QuietEndHour', [Reflection.BindingFlags]'Instance,NonPublic,Public').SetValue($settings, [DateTime]::Now.Hour)
+$isQuiet = $notificationType.GetMethod('IsQuiet', [Reflection.BindingFlags]'Static,NonPublic,Public')
+if (-not $isQuiet.Invoke($null, @($settings, [DateTime]::Now))) { throw 'Quiet-hours notification suppression failed.' }
+Write-Host 'PASS per-agent notifications and quiet-hours policy'
+
+$historyType = $assembly.GetType('AgentTrafficLightNative.StateHistory')
+$historyPath = Join-Path $work 'state-history.jsonl'; $oldHistoryPath = $env:AGENT_BEACON_HISTORY_PATH; $env:AGENT_BEACON_HISTORY_PATH = $historyPath
+$historyTask = New-StateTask 'Codex' 'history:1' 'attention' $freshNow
+$taskType.GetField('Title', [Reflection.BindingFlags]'Instance,NonPublic,Public').SetValue($historyTask, 'SECRET CHAT BODY')
+$taskType.GetField('Detail', [Reflection.BindingFlags]'Instance,NonPublic,Public').SetValue($historyTask, '等待你的确认')
+$taskType.GetField('Evidence', [Reflection.BindingFlags]'Instance,NonPublic,Public').SetValue($historyTask, 'Codex 会话事件')
+$historyType.GetMethod('Record', [Reflection.BindingFlags]'Static,NonPublic,Public').Invoke($null, @($historyTask)) | Out-Null
+$historyRaw = Get-Content -LiteralPath $historyPath -Encoding UTF8 -Raw
+if ($historyRaw -match 'SECRET CHAT BODY') { throw 'State history leaked a task title/chat body.' }
+$recentHistory = $historyType.GetMethod('Recent', [Reflection.BindingFlags]'Static,NonPublic,Public').Invoke($null, @([int]10))
+if ($recentHistory.Count -ne 1) { throw 'State history did not return the recorded transition.' }
+$historyType.GetMethod('Clear', [Reflection.BindingFlags]'Static,NonPublic,Public').Invoke($null, @()) | Out-Null
+$env:AGENT_BEACON_HISTORY_PATH = $oldHistoryPath
+Write-Host 'PASS privacy-safe bounded state history'
+
+$windowType = $assembly.GetType('AgentTrafficLightNative.AgentWindowActivator')
+$matchesWindow = $windowType.GetMethod('Matches', [Reflection.BindingFlags]'Static,NonPublic')
+if (-not $matchesWindow.Invoke($null, @('Codex','ChatGPT','')) -or -not $matchesWindow.Invoke($null, @('TRAE','TRAE',''))) { throw 'Agent window matching rules failed.' }
+$updateType = $assembly.GetType('AgentTrafficLightNative.UpdateService')
+$safeTarget = $updateType.GetMethod('IsSafeUpdateTarget', [Reflection.BindingFlags]'Static,NonPublic,Public')
+if (-not $safeTarget.Invoke($null, @('D:\Agent-Beacon-1.4.0.exe')) -or $safeTarget.Invoke($null, @('C:\Windows\System32\notepad.exe'))) { throw 'Automatic update target validation failed.' }
+$parseRelease = $updateType.GetMethod('ParseRelease', [Reflection.BindingFlags]'Static,NonPublic,Public')
+$releaseJson = '{"tag_name":"v9.9.9","html_url":"https://github.com/LAUFLO/agent-beacon/releases/tag/v9.9.9","assets":[{"name":"Agent-Beacon-9.9.9.exe","browser_download_url":"https://example.invalid/Agent-Beacon-9.9.9.exe","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}'
+$releaseInfo = $parseRelease.Invoke($null, @($releaseJson))
+$updateInfoType = $assembly.GetType('AgentTrafficLightNative.UpdateInfo')
+if ($updateInfoType.GetField('Version').GetValue($releaseInfo) -ne '9.9.9' -or $updateInfoType.GetField('Sha256').GetValue($releaseInfo).Length -ne 64) { throw 'GitHub release asset/digest parsing failed.' }
+$appInfoType = $assembly.GetType('AgentTrafficLightNative.AppInfo')
+if ($appInfoType.GetField('Version', [Reflection.BindingFlags]'Static,NonPublic,Public').GetRawConstantValue() -ne '1.4.0') { throw 'Application version metadata is not 1.4.0.' }
+Write-Host 'PASS click-to-focus matching, safe GitHub updater and centralized version metadata'
+
 $env:AGENT_BEACON_TRAE_MCP_DIR = $oldUpgradeDir
 $env:AGENT_TRAFFIC_LIGHT_HOME = $oldHome
 Write-Host 'PASS TRAE MCP stable-path upgrade and hash refresh'

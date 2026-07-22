@@ -11,7 +11,7 @@ namespace AgentBeaconTraeMcp {
   // The settings installer extracts it locally, and TRAE communicates with it
   // through newline-delimited JSON-RPC over stdio.
   static class TraeMcpHost {
-    const string Version = "1.3.6";
+    const string Version = "1.4.0";
     static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = 4 * 1024 * 1024 };
     static readonly string ProcessSession = "mcp-" + Process.GetCurrentProcess().Id + "-" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     static string Home { get { string configured = Environment.GetEnvironmentVariable("AGENT_TRAFFIC_LIGHT_HOME"); if (!String.IsNullOrWhiteSpace(configured)) return configured; string profile = Environment.GetEnvironmentVariable("USERPROFILE"); return String.IsNullOrWhiteSpace(profile) ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) : profile; } }
@@ -19,20 +19,22 @@ namespace AgentBeaconTraeMcp {
 
     public static int Main(string[] args) {
       Console.InputEncoding = Encoding.UTF8; Console.OutputEncoding = new UTF8Encoding(false);
-      using (var input = new StreamReader(Console.OpenStandardInput(), Encoding.UTF8))
-      using (var output = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true }) {
-        string line;
-        while ((line = input.ReadLine()) != null) {
-          if (String.IsNullOrWhiteSpace(line)) continue;
-          IDictionary<string, object> request; try { request = Json.DeserializeObject(line) as IDictionary<string, object>; } catch { continue; }
-          if (request == null) continue; object id; bool hasId = request.TryGetValue("id", out id); if (!hasId) continue;
-          string method = S(request, "method", "");
-          try { Write(output, Success(id, Handle(method, D(request, "params")))); }
-          catch (ArgumentException ex) { Write(output, Error(id, -32602, ex.Message)); }
-          catch (NotSupportedException ex) { Write(output, Error(id, -32601, ex.Message)); }
-          catch (Exception ex) { Write(output, Error(id, -32603, "Agent Beacon MCP error: " + ex.Message)); }
+      try {
+        using (var input = new StreamReader(Console.OpenStandardInput(), Encoding.UTF8))
+        using (var output = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true }) {
+          string line;
+          while ((line = input.ReadLine()) != null) {
+            if (String.IsNullOrWhiteSpace(line)) continue;
+            IDictionary<string, object> request; try { request = Json.DeserializeObject(line) as IDictionary<string, object>; } catch { continue; }
+            if (request == null) continue; object id; bool hasId = request.TryGetValue("id", out id); if (!hasId) continue;
+            string method = S(request, "method", ""); TouchHealth(true, method);
+            try { Write(output, Success(id, Handle(method, D(request, "params")))); }
+            catch (ArgumentException ex) { Write(output, Error(id, -32602, ex.Message)); }
+            catch (NotSupportedException ex) { Write(output, Error(id, -32601, ex.Message)); }
+            catch (Exception ex) { Write(output, Error(id, -32603, "Agent Beacon MCP error: " + ex.Message)); }
+          }
         }
-      }
+      } finally { TouchHealth(false, "disconnect"); }
       return 0;
     }
 
@@ -71,7 +73,7 @@ namespace AgentBeaconTraeMcp {
       string session = SafeId(S(arguments, "session_id", ProcessSession), ProcessSession), taskId = session;
       long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), started = now; string path = Path.Combine(BridgeDir, "trae-mcp-" + Hash(session) + ".json");
       try { if (File.Exists(path)) { var old = Json.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)) as IDictionary<string, object>; if (old != null && S(old, "sessionId", "") == session) started = N(old, "startedAt", now); } } catch { }
-      var row = Obj("source", "TRAE", "integration", "mcp", "id", "trae-mcp:" + taskId, "sessionId", session, "title", "TRAE Work", "status", status, "detail", fallback, "startedAt", started, "updatedAt", now, "explicitStart", true, "reliableStart", true, "reportedState", input);
+      var row = Obj("source", "TRAE", "integration", "mcp", "helperVersion", Version, "id", "trae-mcp:" + taskId, "sessionId", session, "title", "TRAE Work", "status", status, "detail", fallback, "startedAt", started, "updatedAt", now, "explicitStart", true, "reliableStart", true, "reportedState", input);
       AtomicWrite(path, Json.Serialize(row));
       string reply = input == "waiting" ? "ok; 立即显示确认；回复后先 running" : input == "completed" ? "ok; 立即输出最终答复" : "ok";
       var content = Obj("type", "text", "text", reply);
@@ -84,6 +86,7 @@ namespace AgentBeaconTraeMcp {
     static long N(IDictionary<string, object> row, string key, long fallback) { object value; long parsed; return row != null && row.TryGetValue(key, out value) && value != null && Int64.TryParse(Convert.ToString(value), out parsed) ? parsed : fallback; }
     static string SafeId(string value, string fallback) { if (String.IsNullOrWhiteSpace(value)) return fallback; var text = new StringBuilder(); foreach (char c in value.Trim()) if (Char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '.' || c == ':') text.Append(c); if (text.Length < 3) return fallback; return text.Length > 128 ? text.ToString(0, 128) : text.ToString(); }
     static string Hash(string value) { using (var sha = SHA256.Create()) { byte[] bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(value)); var text = new StringBuilder(); for (int i = 0; i < 10; i++) text.Append(bytes[i].ToString("x2")); return text.ToString(); } }
+    static void TouchHealth(bool connected, string activity) { try { long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); var row = Obj("source", "TRAE", "integration", "mcp-health", "helperVersion", Version, "processId", Process.GetCurrentProcess().Id, "processSession", ProcessSession, "connected", connected, "activity", activity, "updatedAt", now); AtomicWrite(Path.Combine(BridgeDir, "trae-mcp-health.json"), Json.Serialize(row)); } catch { } }
     static void AtomicWrite(string path, string content) { Directory.CreateDirectory(Path.GetDirectoryName(path)); string temp = path + "." + Process.GetCurrentProcess().Id + ".tmp"; File.WriteAllText(temp, content, new UTF8Encoding(false)); if (File.Exists(path)) { try { File.Replace(temp, path, null); return; } catch { } } if (File.Exists(path)) File.Delete(path); File.Move(temp, path); }
     static IDictionary<string, object> Success(object id, object result) { return Obj("jsonrpc", "2.0", "id", id, "result", result); }
     static IDictionary<string, object> Error(object id, int code, string message) { return Obj("jsonrpc", "2.0", "id", id, "error", Obj("code", code, "message", message)); }

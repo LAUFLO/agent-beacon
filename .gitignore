@@ -1,0 +1,5 @@
+# Local build outputs
+/Agent-Beacon-*.exe
+/Agent-Beacon-*.sha256
+/integrations/Agent-Beacon-MCP.exe
+/artifacts/

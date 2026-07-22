@@ -25,6 +25,10 @@ try {
 
   $initialize = Invoke-Mcp '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}'
   if ($initialize.result.serverInfo.name -ne 'agent-beacon-trae') { throw 'TRAE MCP initialize response is invalid.' }
+  if ($initialize.result.serverInfo.version -ne '1.4.0') { throw 'TRAE MCP version is not 1.4.0.' }
+  $healthPath = Join-Path $homePath '.agent-traffic-light\events\trae-mcp-health.json'
+  $health = Get-Content -LiteralPath $healthPath -Encoding UTF8 -Raw | ConvertFrom-Json
+  if (-not $health.connected -or $health.helperVersion -ne '1.4.0') { throw 'TRAE MCP live health handshake was not recorded.' }
   $tools = Invoke-Mcp '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
   if ($tools.result.tools[0].name -ne 'agent_beacon_report_state') { throw 'TRAE MCP status tool was not advertised.' }
   $propertyNames = @($tools.result.tools[0].inputSchema.properties.PSObject.Properties.Name | Sort-Object)
@@ -53,6 +57,9 @@ try {
 
   $process.StandardInput.Close()
   if (-not $process.WaitForExit(5000)) { $process.Kill(); throw 'TRAE MCP helper did not exit after stdin closed.' }
+  $health = Get-Content -LiteralPath $healthPath -Encoding UTF8 -Raw | ConvertFrom-Json
+  if ($health.connected -or $health.activity -ne 'disconnect') { throw 'TRAE MCP disconnect health was not recorded.' }
+  Write-Host 'PASS TRAE MCP health handshake and disconnect freshness record'
 } finally {
   if ($process -and -not $process.HasExited) { $process.Kill() }
   $env:AGENT_TRAFFIC_LIGHT_HOME = $oldHome
