@@ -44,8 +44,10 @@ jobs:
 
           git fetch --tags --force
           git show-ref --verify --quiet "refs/tags/$tag"
-          if ($LASTEXITCODE -eq 0) { throw "Tag $tag already exists. Increase AppInfo.Version before publishing again." }
-          if ($LASTEXITCODE -ne 1) { throw 'Unable to inspect existing tags.' }
+          $tagCheckExitCode = $LASTEXITCODE
+          if ($tagCheckExitCode -eq 0) { throw "Tag $tag already exists. Increase AppInfo.Version before publishing again." }
+          if ($tagCheckExitCode -ne 1) { throw 'Unable to inspect existing tags.' }
+          $global:LASTEXITCODE = 0
 
           "version=$version" >> $env:GITHUB_OUTPUT
           "tag=$tag" >> $env:GITHUB_OUTPUT

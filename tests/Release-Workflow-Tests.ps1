@@ -10,6 +10,7 @@ $publish = Get-Content -LiteralPath $publishPath -Encoding UTF8 -Raw
 foreach ($required in @('workflow_dispatch:','commit_sha:','ref: main','Replay-State-Tests.ps1','Mcp-Protocol-Tests.ps1','integration-event-tests.mjs','Release-Workflow-Tests.ps1','Ui-Style-Tests.ps1','actions/upload-artifact@v4','Prepare release notes with package hash','Get-FileHash','steps.notes.outputs.file','Create tag, release, and upload EXE','--target','$env:GITHUB_SHA')) {
   if (-not $workflow.Contains($required)) { throw "Release workflow is missing: $required" }
 }
+if ($workflow -notmatch '\$tagCheckExitCode = \$LASTEXITCODE' -or $workflow -notmatch '\$global:LASTEXITCODE = 0') { throw 'Release workflow does not safely handle the expected missing-tag exit code.' }
 if ($workflow -match "tags: \['v\*'\]" -or $workflow -match '(?m)^  push:$') { throw 'Release workflow must be dispatched once by publish.ps1, not recursively by branch or tag pushes.' }
 if (-not $workflow.Contains('@(''release'',''create'',$env:RELEASE_TAG)') -or $workflow -notmatch '& gh @arguments') { throw 'Release workflow does not create the tag and GitHub release.' }
 if ($workflow -match 'CERTIFICATE|signtool|RequireSignature') { throw 'Code-signing requirements were not fully removed.' }
