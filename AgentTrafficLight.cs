@@ -6,6 +6,7 @@ using System.Drawing;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -19,8 +20,8 @@ using Microsoft.Win32;
 [assembly: AssemblyProduct("Agent Beacon")]
 [assembly: AssemblyCompany("Agent Beacon")]
 [assembly: AssemblyCopyright("Copyright © 2026")]
-[assembly: AssemblyVersion("1.3.0.0")]
-[assembly: AssemblyFileVersion("1.3.0.0")]
+[assembly: AssemblyVersion("1.3.6.0")]
+[assembly: AssemblyFileVersion("1.3.6.0")]
 
 namespace AgentTrafficLightNative {
   static class State {
@@ -32,14 +33,12 @@ namespace AgentTrafficLightNative {
   sealed class AgentTask {
     public string Id, Source, SessionId, Title, Status, Detail, Evidence;
     public long StartedAt, UpdatedAt;
-    public bool ExplicitStart, ReliableStart;
+    public bool ExplicitStart, ReliableStart, PendingExec;
   }
 
   sealed class AgentRuntimeSnapshot {
     public readonly HashSet<string> Sources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-    public readonly HashSet<string> RestrictedSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     public readonly Dictionary<string, long> StartedAt = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
-    public readonly HashSet<int> TraeProcessIds = new HashSet<int>();
     public readonly HashSet<int> CodexUiProcessIds = new HashSet<int>();
     public long CapturedAt;
   }
@@ -49,8 +48,7 @@ namespace AgentTrafficLightNative {
     public AgentRuntimeSnapshot Runtime;
     public int FilesRead;
     public long DurationMs;
-    public bool TraeUiAttention, TraeVisualAttention, TraeVisualObserved, CodexUiAttention;
-    public long TraeVisualObservedAt;
+    public bool CodexUiAttention;
     public string Error;
   }
 
@@ -63,10 +61,11 @@ namespace AgentTrafficLightNative {
     public long Offset, Size, Ticks; public string Remainder = "", Current, Session;
     public readonly Dictionary<string, AgentTask> Turns = new Dictionary<string, AgentTask>();
     public readonly HashSet<string> PendingAttentionCalls = new HashSet<string>(StringComparer.Ordinal);
+    public readonly HashSet<string> PendingExecCalls = new HashSet<string>(StringComparer.Ordinal);
   }
 
   sealed class SettingsData {
-    public int RefreshMs = 1000;
+    public int RefreshMs = 1500;
     public int MaxTasks = 80;
     public bool AutoStart = false;
     public bool TaskbarMode = false;
@@ -103,7 +102,7 @@ namespace AgentTrafficLightNative {
     public static string Report() {
       lock (Sync) {
         string at = lastScanAt > 0 ? DateTimeOffset.FromUnixTimeMilliseconds(lastScanAt).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "--";
-        return "Agent Beacon 1.3.0 诊断（不包含聊天正文）" + Environment.NewLine + "扫描: " + at + " · " + lastDuration + "ms · 读取 " + lastFiles + " 个变化文件" + (String.IsNullOrWhiteSpace(lastError) ? "" : Environment.NewLine + "错误: " + lastError) + Environment.NewLine + Summary();
+        return "Agent Beacon 1.3.6 诊断（不包含聊天正文）" + Environment.NewLine + "扫描: " + at + " · " + lastDuration + "ms · 读取 " + lastFiles + " 个变化文件" + (String.IsNullOrWhiteSpace(lastError) ? "" : Environment.NewLine + "错误: " + lastError) + Environment.NewLine + Summary();
       }
     }
     static void Persist(bool force) { try { long now = Util.Now(); if (!force && lastPersistAt != 0 && now - lastPersistAt < 30000) return; string report = Report(); if (report == lastPersisted && !force) return; Directory.CreateDirectory(Path.GetDirectoryName(FilePath)); File.WriteAllText(FilePath, report, new UTF8Encoding(false)); lastPersisted = report; lastPersistAt = now; } catch { } }
@@ -172,11 +171,9 @@ namespace AgentTrafficLightNative {
   sealed class MonitorEngine {
     readonly Dictionary<string, CacheEntry> cache = new Dictionary<string, CacheEntry>(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, CodexStreamState> codexStreams = new Dictionary<string, CodexStreamState>(StringComparer.OrdinalIgnoreCase);
-    readonly TraeStateEngine traeStateEngine = new TraeStateEngine();
-    List<string> codexFiles = new List<string>(), claudeFiles = new List<string>(), traeFiles = new List<string>(), traeChatFiles = new List<string>();
+    List<string> codexFiles = new List<string>(), claudeFiles = new List<string>();
     long lastDiscovery;
     readonly Regex jsonl = new Regex("\\.jsonl$", RegexOptions.IgnoreCase);
-    readonly Regex traeLog = new Regex("\\.log$|(?:ai|agent|chat|conversation|task).*\\.(?:json|jsonl)$", RegexOptions.IgnoreCase);
 
     public void InvalidateDiscovery() { Interlocked.Exchange(ref lastDiscovery, 0); }
 
@@ -185,10 +182,7 @@ namespace AgentTrafficLightNative {
       var all = new List<AgentTask>();
       foreach (var file in codexFiles) all.AddRange(CachedCodex(file, ref filesRead));
       foreach (var file in claudeFiles) all.AddRange(Cached(file, ParseClaude, ref filesRead));
-      foreach (var file in traeFiles) all.AddRange(Cached(file, ParseTrae, ref filesRead));
-      foreach (var file in traeChatFiles) all.AddRange(Cached(file, ParseTraeChatSession, ref filesRead));
       all.AddRange(Bridge(ref filesRead));
-      WriteTraeTraceIfRequested();
       all.Sort(delegate(AgentTask a, AgentTask b) {
         int pa = a.Status == State.Attention ? 0 : a.Status == State.Running ? 1 : 2;
         int pb = b.Status == State.Attention ? 0 : b.Status == State.Running ? 1 : 2;
@@ -197,40 +191,12 @@ namespace AgentTrafficLightNative {
       return all;
     }
 
-    void WriteTraeTraceIfRequested() {
-      string target = Environment.GetEnvironmentVariable("AGENT_BEACON_TRAE_TRACE_PATH"); if (String.IsNullOrWhiteSpace(target)) return;
-      try {
-        var files = new List<string>(traeChatFiles); files.Sort(delegate(string a, string b) { try { return File.GetLastWriteTimeUtc(b).CompareTo(File.GetLastWriteTimeUtc(a)); } catch { return 0; } });
-        var text = new StringBuilder("TRAE sanitized schema trace (no chat text)\r\n");
-        for (int i = 0; i < Math.Min(8, files.Count); i++) {
-          var root = traeStateEngine.LoadRoot(files[i]); if (root == null) continue; object requestsObject; if (!root.TryGetValue("requests", out requestsObject)) continue; var requests = traeStateEngine.Items(requestsObject); if (requests.Count == 0) continue;
-          text.Append("\r\nFILE ").Append(Path.GetFileName(files[i])).Append(" modified=").Append(File.GetLastWriteTimeUtc(files[i]).ToString("o")).Append(" requests=").Append(requests.Count).Append("\r\n");
-          traeStateEngine.AppendSanitizedSchema(requests[requests.Count - 1], "request", 0, text);
-        }
-        Directory.CreateDirectory(Path.GetDirectoryName(target)); File.WriteAllText(target, text.ToString(), new UTF8Encoding(false));
-      } catch (Exception ex) { try { File.WriteAllText(target, "trace failed: " + ex.Message, new UTF8Encoding(false)); } catch { } }
-    }
     void Discover() {
       long now = Util.Now(); if (lastDiscovery != 0 && now - lastDiscovery < 30000) return;
       lastDiscovery = now;
       codexFiles = new List<string>(Util.Files(Path.Combine(Util.Home, ".codex", "sessions"), jsonl, DateTime.UtcNow.AddDays(-3), 12));
       claudeFiles = new List<string>(Util.Files(Path.Combine(Util.Home, ".claude", "projects"), jsonl, DateTime.UtcNow.AddDays(-3), 12));
-      var roots = new List<string>();
-      string appData = Path.Combine(Util.Home, "AppData", "Roaming"); if (!Directory.Exists(appData)) appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-      roots.Add(Path.Combine(appData, "TRAE SOLO CN", "logs")); roots.Add(Path.Combine(appData, "TRAE", "logs")); roots.Add(Path.Combine(appData, "Trae", "logs"));
-      roots.Add(Path.Combine(Util.Home, ".trae", "logs"));
-      var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-      foreach (var root in roots) foreach (var file in Util.Files(root, traeLog, DateTime.UtcNow.AddDays(-3), 40)) set.Add(file);
-      traeFiles = new List<string>(set);
-      var chatSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase); var chatJson = new Regex("\\.jsonl?$", RegexOptions.IgnoreCase);
-      foreach (string product in new[] { "TRAE SOLO CN", "TRAE", "Trae" }) {
-        string userRoot = Path.Combine(appData, product, "User");
-        foreach (var file in Util.Files(Path.Combine(userRoot, "globalStorage", "emptyWindowChatSessions"), chatJson, DateTime.UtcNow.AddDays(-3), 30)) chatSet.Add(file);
-        foreach (var file in Util.Files(Path.Combine(userRoot, "workspaceStorage"), chatJson, DateTime.UtcNow.AddDays(-3), 80))
-          if (String.Equals(Path.GetFileName(Path.GetDirectoryName(file)), "chatSessions", StringComparison.OrdinalIgnoreCase)) chatSet.Add(file);
-      }
-      traeChatFiles = new List<string>(chatSet);
-      var keep = new HashSet<string>(codexFiles, StringComparer.OrdinalIgnoreCase); foreach (var file in claudeFiles) keep.Add(file); foreach (var file in traeFiles) keep.Add(file); foreach (var file in traeChatFiles) keep.Add(file);
+      var keep = new HashSet<string>(codexFiles, StringComparer.OrdinalIgnoreCase); foreach (var file in claudeFiles) keep.Add(file);
       try { if (Directory.Exists(Util.BridgeDir)) foreach (var file in Directory.GetFiles(Util.BridgeDir, "*.json")) keep.Add(file); } catch { }
       foreach (string old in new List<string>(cache.Keys)) if (!keep.Contains(old)) cache.Remove(old);
       foreach (string old in new List<string>(codexStreams.Keys)) if (!keep.Contains(old)) codexStreams.Remove(old);
@@ -242,7 +208,7 @@ namespace AgentTrafficLightNative {
         var info = new FileInfo(file); CacheEntry old;
         if (cache.TryGetValue(file, out old) && old.Size == info.Length && old.Ticks == info.LastWriteTimeUtc.Ticks) return old.Tasks;
         var tasks = parser(file, new DateTimeOffset(info.LastWriteTimeUtc).ToUnixTimeMilliseconds()); filesRead++;
-        string evidence = parser.Method.Name == "ParseTraeChatSession" ? "TRAE Work 会话事件" : parser.Method.Name == "ParseTrae" ? "TRAE 时间戳日志" : parser.Method.Name == "ParseCodex" ? "Codex 会话事件" : parser.Method.Name == "ParseClaude" ? "Claude 会话事件" : "本地事件";
+        string evidence = parser.Method.Name == "ParseCodex" ? "Codex 会话事件" : parser.Method.Name == "ParseClaude" ? "Claude 会话事件" : "本地事件";
         foreach (var task in tasks) if (String.IsNullOrWhiteSpace(task.Evidence)) task.Evidence = evidence;
         cache[file] = new CacheEntry { Size = info.Length, Ticks = info.LastWriteTimeUtc.Ticks, Tasks = tasks }; return tasks;
       } catch { return new List<AgentTask>(); }
@@ -257,7 +223,7 @@ namespace AgentTrafficLightNative {
         bool reset = state.Ticks == 0 || info.Length < state.Offset || info.Length - state.Offset > 4 * 1024 * 1024;
         long start = reset ? Math.Max(0, info.Length - 512 * 1024) : state.Offset;
         if (reset) {
-          state.Offset = start; state.Remainder = ""; state.Current = null; state.Session = Path.GetFileNameWithoutExtension(file); state.Turns.Clear(); state.PendingAttentionCalls.Clear();
+          state.Offset = start; state.Remainder = ""; state.Current = null; state.Session = Path.GetFileNameWithoutExtension(file); state.Turns.Clear(); state.PendingAttentionCalls.Clear(); state.PendingExecCalls.Clear();
         }
         string appended = ""; long end;
         using (var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) {
@@ -292,6 +258,7 @@ namespace AgentTrafficLightNative {
 
     void RefreshCodexPendingAttention(CodexStreamState state) {
       AgentTask task; if (state.Current == null || !state.Turns.TryGetValue(state.Current, out task) || task.Status == State.Complete) return;
+      task.PendingExec = state.PendingExecCalls.Count > 0;
       bool explicitRequest = state.PendingAttentionCalls.Count > 0;
       if (explicitRequest) { task.Status = State.Attention; task.Detail = "等待你的确认或输入"; }
       else if (task.Status == State.Attention) { task.Status = State.Running; task.Detail = "正在执行"; }
@@ -303,7 +270,7 @@ namespace AgentTrafficLightNative {
       if (type == "session_meta") { state.Session = Util.S(payload, "session_id", Util.S(payload, "id", state.Session)); return; }
       string ptype = Util.S(payload, "type", "");
       if (type == "event_msg" && ptype == "task_started") {
-        state.PendingAttentionCalls.Clear();
+        state.PendingAttentionCalls.Clear(); state.PendingExecCalls.Clear();
         state.Current = Util.S(payload, "turn_id", Guid.NewGuid().ToString("N"));
         state.Turns[state.Current] = new AgentTask { Id = "codex:" + state.Session + ":" + state.Current, Source = "Codex", SessionId = state.Session, Title = "Codex 任务", Status = State.Running, Detail = "正在执行", StartedAt = at, UpdatedAt = at }; return;
       }
@@ -315,21 +282,70 @@ namespace AgentTrafficLightNative {
       AgentTask task; if (state.Current == null || !state.Turns.TryGetValue(state.Current, out task)) return;
       task.UpdatedAt = Math.Max(task.UpdatedAt, at);
       if (type == "event_msg" && ptype == "user_message") task.Title = Util.Clean(Util.S(payload, "message", ""), task.Title);
-      else if (type == "event_msg" && ptype == "task_complete") { task.Status = State.Complete; task.Detail = "任务已结束"; state.PendingAttentionCalls.Clear(); state.Current = null; }
-      else if (type == "event_msg" && ptype == "turn_aborted") { task.Status = State.Complete; task.Detail = "任务已中断"; state.PendingAttentionCalls.Clear(); state.Current = null; }
+      else if (type == "event_msg" && ptype == "task_complete") { task.Status = State.Complete; task.Detail = "任务已结束"; task.PendingExec = false; state.PendingAttentionCalls.Clear(); state.PendingExecCalls.Clear(); state.Current = null; }
+      else if (type == "event_msg" && ptype == "turn_aborted") { task.Status = State.Complete; task.Detail = "任务已中断"; task.PendingExec = false; state.PendingAttentionCalls.Clear(); state.PendingExecCalls.Clear(); state.Current = null; }
       else if (type == "response_item" && (ptype == "custom_tool_call" || ptype == "function_call")) {
         string name = Util.S(payload, "name", ""), input = Util.S(payload, "input", Util.S(payload, "arguments", ""));
-        bool explicitRequest = Regex.IsMatch(name, "^(?:request_permissions?|request_user_input|elicitation|approval(?:_request)?)$", RegexOptions.IgnoreCase) || Regex.IsMatch(input, @"tools\s*\.\s*(?:request_permissions?|request_user_input|elicitation|approval(?:_request)?)\s*\(", RegexOptions.IgnoreCase);
+        string callId = Util.S(payload, "call_id", Util.S(payload, "id", "")); callId = String.IsNullOrWhiteSpace(callId) ? "*" : callId;
+        if (String.Equals(name, "exec", StringComparison.OrdinalIgnoreCase)) { state.PendingExecCalls.Add(callId); task.PendingExec = true; }
+        bool explicitRequest = Regex.IsMatch(name, "^(?:request_permissions?|request_user_input|elicitation|approval(?:_request)?)$", RegexOptions.IgnoreCase)
+          || Regex.IsMatch(input, @"tools\s*\.\s*(?:request_permissions?|request_user_input|elicitation|approval(?:_request)?)\s*\(", RegexOptions.IgnoreCase)
+          || (String.Equals(name, "exec", StringComparison.OrdinalIgnoreCase) && CodexInputRequiresEscalation(input));
         if (explicitRequest) {
-          string callId = Util.S(payload, "call_id", Util.S(payload, "id", "")); callId = String.IsNullOrWhiteSpace(callId) ? "*" : callId;
           state.PendingAttentionCalls.Add(callId);
           RefreshCodexPendingAttention(state);
         }
       } else if (type == "response_item" && (ptype == "custom_tool_call_output" || ptype == "function_call_output")) {
         string callId = Util.S(payload, "call_id", Util.S(payload, "id", ""));
+        state.PendingExecCalls.Remove("*"); if (!String.IsNullOrWhiteSpace(callId)) state.PendingExecCalls.Remove(callId); task.PendingExec = state.PendingExecCalls.Count > 0;
         bool resolved = state.PendingAttentionCalls.Remove("*"); if (!String.IsNullOrWhiteSpace(callId)) resolved = state.PendingAttentionCalls.Remove(callId) || resolved;
         if (resolved) { RefreshCodexPendingAttention(state); if (task.Status == State.Running) task.Detail = "已确认，继续执行"; }
       }
+    }
+
+    static bool CodexInputRequiresEscalation(string input) {
+      if (String.IsNullOrWhiteSpace(input)) return false;
+      int cursor = 0;
+      while (cursor < input.Length) {
+        SkipCodexInputTrivia(input, ref cursor); if (cursor >= input.Length) break;
+        string token; if (!ReadCodexInputToken(input, ref cursor, out token)) { cursor++; continue; }
+        if (!String.Equals(token, "sandbox_permissions", StringComparison.OrdinalIgnoreCase)) continue;
+        SkipCodexInputTrivia(input, ref cursor); if (cursor >= input.Length || input[cursor] != ':') continue;
+        cursor++; SkipCodexInputTrivia(input, ref cursor);
+        string value; if (ReadCodexInputToken(input, ref cursor, out value) && String.Equals(value, "require_escalated", StringComparison.OrdinalIgnoreCase)) return true;
+      }
+      return false;
+    }
+
+    static void SkipCodexInputTrivia(string input, ref int cursor) {
+      while (cursor < input.Length) {
+        if (Char.IsWhiteSpace(input[cursor])) { cursor++; continue; }
+        if (cursor + 1 < input.Length && input[cursor] == '/' && input[cursor + 1] == '/') {
+          cursor += 2; while (cursor < input.Length && input[cursor] != '\r' && input[cursor] != '\n') cursor++; continue;
+        }
+        if (cursor + 1 < input.Length && input[cursor] == '/' && input[cursor + 1] == '*') {
+          cursor += 2; while (cursor + 1 < input.Length && !(input[cursor] == '*' && input[cursor + 1] == '/')) cursor++;
+          if (cursor + 1 < input.Length) cursor += 2; continue;
+        }
+        break;
+      }
+    }
+
+    static bool ReadCodexInputToken(string input, ref int cursor, out string token) {
+      token = null; if (cursor >= input.Length) return false; char first = input[cursor];
+      if (first == '\"' || first == '\'' || first == '`') {
+        char quote = first; cursor++; var value = new StringBuilder();
+        while (cursor < input.Length) {
+          char current = input[cursor++];
+          if (current == quote) { token = value.ToString(); return true; }
+          if (current == '\\' && cursor < input.Length) { value.Append(input[cursor++]); continue; }
+          value.Append(current);
+        }
+        return false;
+      }
+      if (!(Char.IsLetterOrDigit(first) || first == '_' || first == '$' || first == '-')) return false;
+      int start = cursor++; while (cursor < input.Length) { char current = input[cursor]; if (!(Char.IsLetterOrDigit(current) || current == '_' || current == '$' || current == '-')) break; cursor++; }
+      token = input.Substring(start, cursor - start); return true;
     }
 
     List<AgentTask> ParseCodex(string file, long mtime) {
@@ -360,9 +376,6 @@ namespace AgentTrafficLightNative {
       if (task == null) return new List<AgentTask>(); if (task.Status == State.Running && Util.Now() - task.UpdatedAt > 1800000) { task.Status = State.Complete; task.Detail = "超过 30 分钟无活动，视为空闲"; } return new List<AgentTask> { task };
     }
 
-    List<AgentTask> ParseTrae(string file, long mtime) { return traeStateEngine.ParseLegacyLog(file, mtime); }
-    List<AgentTask> ParseTraeChatSession(string file, long mtime) { return traeStateEngine.ParseSession(file, mtime); }
-
     List<AgentTask> Bridge(ref int filesRead) {
       var tasks = new List<AgentTask>(); Directory.CreateDirectory(Util.BridgeDir);
       foreach (var file in Directory.GetFiles(Util.BridgeDir, "*.json")) {
@@ -379,6 +392,7 @@ namespace AgentTrafficLightNative {
       var result = new List<AgentTask>(); IDictionary<string, object> row;
       try { row = Util.Json.DeserializeObject(File.ReadAllText(file, Encoding.UTF8)) as IDictionary<string, object>; } catch { return result; }
       string source = Util.S(row, "source", ""); if (source != "TRAE" && source != "Claude Code" && source != "OpenCode") return result;
+      if (source == "TRAE" && (!String.Equals(Util.S(row, "integration", ""), "mcp", StringComparison.OrdinalIgnoreCase) || !Util.S(row, "id", "").StartsWith("trae-mcp:", StringComparison.OrdinalIgnoreCase))) return result;
       string status = Util.S(row, "status", ""); if (status != State.Running && status != State.Attention && status != State.Complete) return result;
       string sid = source == "OpenCode" ? Util.S(row, "sessionId", "") : Util.S(row, "sessionId", Util.S(row, "id", "")); if (sid.Length == 0) return result;
       if ((source == "OpenCode" || source == "TRAE") && (String.Equals(sid, "opencode-session", StringComparison.OrdinalIgnoreCase) || !Regex.IsMatch(sid, "^[a-z0-9][a-z0-9_.:-]{2,127}$", RegexOptions.IgnoreCase))) return result;
@@ -394,11 +408,8 @@ namespace AgentTrafficLightNative {
     readonly List<FileSystemWatcher> watchers = new List<FileSystemWatcher>(); readonly Action<bool> changed;
     public MonitorWatchers(Action<bool> onChanged) { changed = onChanged; Start(); }
     void Start() {
-      string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
       var roots = new List<string> {
-        Path.Combine(Util.Home, ".codex", "sessions"), Path.Combine(Util.Home, ".claude", "projects"), Util.BridgeDir,
-        Path.Combine(appData, "TRAE SOLO CN", "logs"), Path.Combine(appData, "TRAE SOLO CN", "User"),
-        Path.Combine(appData, "TRAE", "logs"), Path.Combine(appData, "TRAE", "User"), Path.Combine(Util.Home, ".trae", "logs")
+        Path.Combine(Util.Home, ".codex", "sessions"), Path.Combine(Util.Home, ".claude", "projects"), Util.BridgeDir
       };
       var unique = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
       foreach (string root in roots) if (unique.Add(root) && Directory.Exists(root)) try {
@@ -420,16 +431,6 @@ namespace AgentTrafficLightNative {
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll")] static extern bool GetProcessTimes(IntPtr process, out FileTime creation, out FileTime exit, out FileTime kernel, out FileTime user);
     [DllImport("ntdll.dll")] static extern int NtQueryInformationProcess(IntPtr process, int informationClass, IntPtr information, int informationLength, out int returnLength);
-    delegate bool EnumWindowsProc(IntPtr window, IntPtr parameter);
-    [StructLayout(LayoutKind.Sequential)] struct NativeRect { public int Left, Top, Right, Bottom; }
-    [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc callback, IntPtr parameter);
-    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out int processId);
-    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
-    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr window);
-    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out NativeRect rect);
-    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder text, int count);
-    static readonly string[] TraeAttentionNames = { "正在向用户提问", "等待你的回复", "等待你的回复...", "等待你的回复…", "等待您的回复", "等待用户回复", "Waiting for your reply", "Waiting for your response", "Asking the user", "Awaiting your response" };
     static readonly object SnapshotSync = new object(); static AgentRuntimeSnapshot cachedSnapshot;
     public static AgentRuntimeSnapshot Snapshot() {
       var snapshot = new AgentRuntimeSnapshot { CapturedAt = Util.Now() };
@@ -440,16 +441,13 @@ namespace AgentTrafficLightNative {
       foreach (var process in Process.GetProcesses()) {
         try {
           string name = process.ProcessName; var matched = new HashSet<string>(StringComparer.OrdinalIgnoreCase); MatchName(matched, name);
-          bool codexUiHost = IsCodexUiHostProcessName(name); if (codexUiHost) snapshot.CodexUiProcessIds.Add(process.Id);
+          string lowerName = (name ?? "").Trim().ToLowerInvariant(); if (lowerName == "chatgpt" || lowerName == "codex") snapshot.CodexUiProcessIds.Add(process.Id);
           if (name.Equals("node", StringComparison.OrdinalIgnoreCase) || name.Equals("bun", StringComparison.OrdinalIgnoreCase)) MatchCommandLine(matched, QueryCommandLine(process.Id));
           if (matched.Count == 0) continue;
-          long started = 0; bool restricted = false; IntPtr probe = OpenProcess(ProcessQueryLimitedInformation, false, process.Id);
-          if (probe == IntPtr.Zero) restricted = true; else try { FileTime creation, exit, kernel, user; if (GetProcessTimes(probe, out creation, out exit, out kernel, out user)) { long ticks = ((long)creation.High << 32) | creation.Low; started = DateTimeOffset.FromFileTime(ticks).ToUnixTimeMilliseconds(); } } finally { CloseHandle(probe); }
+          long started = 0; IntPtr probe = OpenProcess(ProcessQueryLimitedInformation, false, process.Id);
+          if (probe != IntPtr.Zero) try { FileTime creation, exit, kernel, user; if (GetProcessTimes(probe, out creation, out exit, out kernel, out user)) { long ticks = ((long)creation.High << 32) | creation.Low; started = DateTimeOffset.FromFileTime(ticks).ToUnixTimeMilliseconds(); } } finally { CloseHandle(probe); }
           foreach (string source in matched) {
             snapshot.Sources.Add(source); long old; if (started > 0 && (!snapshot.StartedAt.TryGetValue(source, out old) || old == 0 || started < old)) snapshot.StartedAt[source] = started;
-            if (restricted) snapshot.RestrictedSources.Add(source);
-            if (source == "TRAE") snapshot.TraeProcessIds.Add(process.Id);
-            if (source == "Codex") snapshot.CodexUiProcessIds.Add(process.Id);
           }
         } catch { } finally { process.Dispose(); }
       }
@@ -463,7 +461,6 @@ namespace AgentTrafficLightNative {
       if (lower == "claude" || lower.Contains("claude-code")) result.Add("Claude Code");
       if (lower == "opencode" || lower.StartsWith("opencode-")) result.Add("OpenCode");
     }
-    public static bool IsCodexUiHostProcessName(string name) { string lower = (name ?? "").Trim().ToLowerInvariant(); return lower == "chatgpt" || lower == "codex"; }
     static void MatchCommandLine(HashSet<string> result, string commandLine) { string cmd = commandLine ?? ""; if (Regex.IsMatch(cmd, "@anthropic-ai[\\\\/]claude-code|claude-code[\\\\/](?:cli|bin)|[\\\\/]claude(?:\\.js)?(?:\"|\\s|$)", RegexOptions.IgnoreCase)) result.Add("Claude Code"); if (Regex.IsMatch(cmd, "(?:^|[\\\\/\\s])opencode(?:\\.cmd|\\.exe|\\.js)?(?:\\s|$)|@opencode-ai[\\\\/]", RegexOptions.IgnoreCase)) result.Add("OpenCode"); }
     static string QueryCommandLine(int processId) {
       IntPtr process = OpenProcess(ProcessQueryLimitedInformation, false, processId); if (process == IntPtr.Zero) return "";
@@ -487,67 +484,39 @@ namespace AgentTrafficLightNative {
       }
       return false;
     }
-    public static bool IsTraeAttentionText(string text) {
-      string value = (text ?? "").Trim(); if (value.Length == 0 || value.Length > 160) return false;
-      return Regex.IsMatch(value, "正在向用户提问|等待(?:你|您|用户)的?(?:回复|回答|确认|选择)|waiting for (?:your|user).{0,12}(?:reply|response|answer|confirmation|choice)|asking the user|awaiting your response", RegexOptions.IgnoreCase);
+    static class CodexAutomationConditions {
+      public static readonly Condition Buttons = new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button);
+      public static readonly Condition Prompts = new OrCondition(new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text), new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Custom));
     }
-    static bool TraeAutomationRootNeedsAttention(AutomationElement root, out int namedElements) {
-      namedElements = 0; if (root == null) return false;
-      var exact = new List<Condition>(); foreach (string label in TraeAttentionNames) exact.Add(new PropertyCondition(AutomationElement.NameProperty, label, PropertyConditionFlags.IgnoreCase));
-      if (root.FindFirst(TreeScope.Descendants, new OrCondition(exact.ToArray())) != null) return true;
-      var visibleText = root.FindAll(TreeScope.Descendants, Condition.TrueCondition);
-      int limit = Math.Min(visibleText.Count, 2000); for (int i = 0; i < limit; i++) {
-        try {
-          var current = visibleText[i].Current; if (current.IsOffscreen) continue;
-          if (!String.IsNullOrWhiteSpace(current.Name)) namedElements++;
-          if (IsTraeAttentionText(current.Name) || IsTraeAttentionText(current.HelpText) || IsTraeAttentionText(current.ItemStatus)) return true;
-        } catch { }
-      }
-      return false;
-    }
-    static long nextTraeUiScan;
-    public static bool TraeNeedsUserAttention(AgentRuntimeSnapshot snapshot) {
-      long now = Util.Now(); if (snapshot == null || !snapshot.Sources.Contains("TRAE") || now < Interlocked.Read(ref nextTraeUiScan)) return false;
-      var processConditions = new List<Condition>(); var directRoots = new List<AutomationElement>();
-      foreach (int processId in snapshot.TraeProcessIds) {
-        Process process = null;
-        try {
-          process = Process.GetProcessById(processId); processConditions.Add(new PropertyCondition(AutomationElement.ProcessIdProperty, process.Id));
-          if (process.MainWindowHandle != IntPtr.Zero) { var direct = AutomationElement.FromHandle(process.MainWindowHandle); if (direct != null) directRoots.Add(direct); }
-        } catch { } finally { if (process != null) process.Dispose(); }
-      }
-      int namedTotal = 0;
-      foreach (var root in directRoots) try { int named; if (TraeAutomationRootNeedsAttention(root, out named)) { Interlocked.Exchange(ref nextTraeUiScan, now + 2000); return true; } namedTotal += named; } catch { }
-      if (processConditions.Count > 0) try {
-        var windows = AutomationElement.RootElement.FindAll(TreeScope.Children, processConditions.Count == 1 ? processConditions[0] : new OrCondition(processConditions.ToArray()));
-        for (int i = 0; i < windows.Count; i++) try { int named; if (TraeAutomationRootNeedsAttention(windows[i], out named)) { Interlocked.Exchange(ref nextTraeUiScan, now + 2000); return true; } namedTotal += named; } catch { }
-      } catch { }
-      Interlocked.Exchange(ref nextTraeUiScan, now + (namedTotal < 5 ? 30000 : 5000));
-      return false;
-    }
-    public static bool TraeNeedsUserAttention() { return TraeNeedsUserAttention(Snapshot()); }
     public static bool IsCodexApprovalPromptText(string text) {
       string value = (text ?? "").Trim(); if (value.Length == 0 || value.Length > 240) return false;
-      return Regex.IsMatch(value, "是否允许(?: ChatGPT| Codex)?.{0,32}(?:编辑|运行|执行|访问)|需要(?:你|您).{0,12}(?:确认|批准|选择)|do you want to allow|approval required|requires your approval", RegexOptions.IgnoreCase);
+      bool chineseApproval = value.IndexOf("允许", StringComparison.Ordinal) >= 0
+        && (value.IndexOf("ChatGPT", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("Codex", StringComparison.OrdinalIgnoreCase) >= 0)
+        && Regex.IsMatch(value, "编辑|运行|执行|访问");
+      return chineseApproval || Regex.IsMatch(value, "需要(?:你|您).{0,12}(?:确认|批准|选择)|do you want to allow|approval required|requires your approval", RegexOptions.IgnoreCase);
     }
-    public static bool IsCodexApprovalActionText(string text) { string value = (text ?? "").Trim(); return Regex.IsMatch(value, "^(?:允许一次|本次允许|始终允许|允许|批准|拒绝|不允许|取消|allow once|allow this time|always allow|approve|deny|reject|cancel)(?:\\s*(?:[⌄▼▾˅v]|展开|更多选项|菜单|menu))*$", RegexOptions.IgnoreCase); }
-    public static bool IsCodexAttentionText(string text) { return IsCodexApprovalPromptText(text) || IsCodexApprovalActionText(text); }
-    public static bool CodexApprovalSignals(bool prompt, bool allowAction, bool denyAction) { return prompt && allowAction; }
+    public static bool IsCodexApprovalActionText(string text) {
+      string value = (text ?? "").Trim();
+      return Regex.IsMatch(value, "^(?:允许一次|本次允许|始终允许|允许|批准|拒绝|不允许|取消|allow once|allow this time|always allow|approve|deny|reject|cancel)(?:\\s*(?:[⌄▼▾˅v]|展开|更多选项|菜单|menu))*$", RegexOptions.IgnoreCase);
+    }
     static bool CodexAutomationRootNeedsAttention(AutomationElement root) {
-      if (root == null) return false; bool prompt = false, allow = false, deny = false;
-      var visibleControls = new OrCondition(new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text), new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
-      var elements = root.FindAll(TreeScope.Descendants, visibleControls); int limit = Math.Min(elements.Count, 1600);
-      for (int i = 0; i < limit; i++) try {
-        var current = elements[i].Current; if (current.IsOffscreen) continue; string value = String.Join(" ", new[] { current.Name ?? "", current.HelpText ?? "", current.ItemStatus ?? "" });
-        if (IsCodexApprovalPromptText(value)) prompt = true;
-        if (current.ControlType == ControlType.Button && IsCodexApprovalActionText(current.Name)) { if (Regex.IsMatch(current.Name ?? "", "拒绝|不允许|取消|deny|reject|cancel", RegexOptions.IgnoreCase)) deny = true; else allow = true; }
-        if (CodexApprovalSignals(prompt, allow, deny)) return true;
+      if (root == null) return false; bool allow = false;
+      var buttons = root.FindAll(TreeScope.Descendants, CodexAutomationConditions.Buttons); int buttonLimit = Math.Min(buttons.Count, 200);
+      for (int i = 0; i < buttonLimit; i++) try {
+        var current = buttons[i].Current; if (current.IsOffscreen) continue;
+        if (IsCodexApprovalActionText(current.Name) && !Regex.IsMatch(current.Name ?? "", "拒绝|不允许|取消|deny|reject|cancel", RegexOptions.IgnoreCase)) { allow = true; break; }
       } catch { }
-      return CodexApprovalSignals(prompt, allow, deny);
+      if (!allow) return false;
+      var prompts = root.FindAll(TreeScope.Descendants, CodexAutomationConditions.Prompts); int promptLimit = Math.Min(prompts.Count, 600);
+      for (int i = 0; i < promptLimit; i++) try {
+        var current = prompts[i].Current; if (current.IsOffscreen) continue;
+        if (IsCodexApprovalPromptText(String.Join(" ", new[] { current.Name ?? "", current.HelpText ?? "", current.ItemStatus ?? "" }))) return true;
+      } catch { }
+      return false;
     }
     static long nextCodexUiScan;
     public static bool CodexNeedsUserAttention(AgentRuntimeSnapshot snapshot) {
-      long now = Util.Now(); if (snapshot == null || !snapshot.Sources.Contains("Codex") || now < Interlocked.Read(ref nextCodexUiScan)) return false;
+      long now = Util.Now(); if (snapshot == null || snapshot.CodexUiProcessIds.Count == 0 || now < Interlocked.Read(ref nextCodexUiScan)) return false;
       var conditions = new List<Condition>(); var directRoots = new List<AutomationElement>();
       foreach (int processId in snapshot.CodexUiProcessIds) {
         Process process = null;
@@ -556,49 +525,14 @@ namespace AgentTrafficLightNative {
           if (process.MainWindowHandle != IntPtr.Zero) { var direct = AutomationElement.FromHandle(process.MainWindowHandle); if (direct != null) directRoots.Add(direct); }
         } catch { } finally { if (process != null) process.Dispose(); }
       }
-      foreach (AutomationElement root in directRoots) try { if (CodexAutomationRootNeedsAttention(root)) { Interlocked.Exchange(ref nextCodexUiScan, now + 1000); return true; } } catch { }
+      foreach (AutomationElement root in directRoots) try { if (CodexAutomationRootNeedsAttention(root)) { Interlocked.Exchange(ref nextCodexUiScan, now + 500); return true; } } catch { }
       if (conditions.Count > 0) try {
-        var windows = AutomationElement.RootElement.FindAll(TreeScope.Children, conditions.Count == 1 ? conditions[0] : new OrCondition(conditions.ToArray()));
-        for (int i = 0; i < windows.Count; i++) try { if (CodexAutomationRootNeedsAttention(windows[i])) { Interlocked.Exchange(ref nextCodexUiScan, now + 1000); return true; } } catch { }
+        Condition windowCondition = conditions.Count == 1 ? conditions[0] : new OrCondition(conditions.ToArray());
+        var windows = AutomationElement.RootElement.FindAll(TreeScope.Children, windowCondition);
+        for (int i = 0; i < windows.Count; i++) try { if (CodexAutomationRootNeedsAttention(windows[i])) { Interlocked.Exchange(ref nextCodexUiScan, now + 500); return true; } } catch { }
       } catch { }
       Interlocked.Exchange(ref nextCodexUiScan, now + 1000); return false;
     }
-    static readonly object VisualSync = new object(); static long visualCheckedAt; static bool visualResult, visualObservable;
-    static void VisualTrace(string text) { string path = Environment.GetEnvironmentVariable("AGENT_BEACON_VISUAL_TRACE_PATH"); if (String.IsNullOrWhiteSpace(path)) return; try { Directory.CreateDirectory(Path.GetDirectoryName(path)); File.WriteAllText(path, text, new UTF8Encoding(false)); } catch { } }
-    public static bool TraeHasVisualAttention(AgentRuntimeSnapshot snapshot) {
-      long now = Util.Now(); lock (VisualSync) { if (visualCheckedAt != 0 && now - visualCheckedAt < 1500) return visualResult; visualCheckedAt = now; visualResult = false; visualObservable = false; }
-      if (snapshot == null || snapshot.TraeProcessIds.Count == 0) return false;
-      IntPtr best = IntPtr.Zero; NativeRect bestRect = new NativeRect(); long bestArea = 0; int matchedWindows = 0; var candidates = new StringBuilder();
-      try {
-        EnumWindows(delegate(IntPtr window, IntPtr parameter) {
-          try { int pid; GetWindowThreadProcessId(window, out pid); if (!IsWindowVisible(window) || IsIconic(window)) return true; NativeRect rect; if (!GetWindowRect(window, out rect)) return true; int w = rect.Right - rect.Left, h = rect.Bottom - rect.Top; var title = new StringBuilder(256); GetWindowText(window, title, title.Capacity); bool byPid = snapshot.TraeProcessIds.Contains(pid), byTitle = Regex.IsMatch(title.ToString(), "TRAE(?: Work)?(?: CN)?", RegexOptions.IgnoreCase); if (w >= 500 && h >= 350 && candidates.Length < 4000) candidates.Append("pid=").Append(pid).Append(" size=").Append(w).Append('x').Append(h).Append(" traePid=").Append(byPid).Append(" titleLen=").Append(title.Length).Append(" handle=").Append(window.ToInt64()).Append("\r\n"); if (!byPid && !byTitle) return true; matchedWindows++; long area = (long)w * h; if (area > bestArea) { bestArea = area; best = window; bestRect = rect; } } catch { } return true;
-        }, IntPtr.Zero);
-        int width = bestRect.Right - bestRect.Left, height = bestRect.Bottom - bestRect.Top; bool foreground = best == GetForegroundWindow(); if (best == IntPtr.Zero || width < 500 || height < 350 || width > 8000 || height > 8000) { VisualTrace("pids=" + snapshot.TraeProcessIds.Count + " matchedWindows=" + matchedWindows + " foreground=" + GetForegroundWindow().ToInt64() + " best=" + best.ToInt64() + " area=" + bestArea + " size=" + width + "x" + height + "\r\n" + candidates); return false; }
-        using (var bitmap = new Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format24bppRgb)) {
-          using (var graphics = Graphics.FromImage(bitmap)) graphics.CopyFromScreen(bestRect.Left, bestRect.Top, 0, 0, new Size(width, height), CopyPixelOperation.SourceCopy);
-          var region = new Rectangle(0, Math.Min(40, height - 1), width, Math.Max(1, height - Math.Min(40, height - 1))); var data = bitmap.LockBits(region, System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
-          try {
-            int stride = Math.Abs(data.Stride), bytes = stride * region.Height; var buffer = new byte[bytes]; Marshal.Copy(data.Scan0, buffer, 0, bytes); int orange = 0, bestRun = 0, bestStart = 0, bestEnd = 0, bestY = 0;
-            for (int y = 0; y < region.Height; y += 3) {
-              int run = 0, runStart = 0, lastOrange = -99;
-              for (int x = 0; x < width; x += 3) {
-                int index = y * stride + x * 3; if (index < 0 || index + 2 >= buffer.Length) continue; int b = buffer[index], g = buffer[index + 1], r = buffer[index + 2];
-                bool strongOrange = r > 220 && g >= 90 && g <= 205 && b < 125 && r - g > 35 && g - b > 20;
-                bool paleOrangeBadge = r > 240 && g >= 160 && g <= 240 && b <= 215 && r - g >= 12 && g - b >= 8;
-                if (strongOrange || paleOrangeBadge) {
-                  orange++; if (run == 0 || x - lastOrange <= 9) run++; else { if (run > bestRun) { bestRun = run; bestStart = runStart; bestEnd = lastOrange; bestY = y; } run = 1; }
-                  if (run == 1) runStart = x; lastOrange = x;
-                } else if (run > 0 && x - lastOrange > 9) { if (run > bestRun) { bestRun = run; bestStart = runStart; bestEnd = lastOrange; bestY = y; } run = 0; }
-              }
-              if (run > bestRun) { bestRun = run; bestStart = runStart; bestEnd = lastOrange; bestY = y; }
-            }
-            bool found = bestRun >= 6 && bestEnd - bestStart >= 18; VisualTrace("pids=" + snapshot.TraeProcessIds.Count + " matchedWindows=" + matchedWindows + " size=" + width + "x" + height + " foreground=" + foreground + " orange=" + orange + " bestRun=" + bestRun + " row=" + bestStart + "-" + bestEnd + "@" + bestY + " found=" + found); lock (VisualSync) { visualObservable = foreground; visualResult = found; } return found;
-          } finally { bitmap.UnlockBits(data); }
-        }
-      } catch (Exception ex) { VisualTrace("visual failed: " + ex.GetType().Name + " " + ex.Message); return false; }
-    }
-    public static bool TraeVisualObservationAvailable() { lock (VisualSync) return visualObservable; }
-    public static long TraeVisualObservationAt() { lock (VisualSync) return visualCheckedAt; }
     static void AddCanonical(HashSet<string> result, string name) {
       if (name.Equals("trae", StringComparison.OrdinalIgnoreCase)) result.Add("TRAE");
       else if (name.Equals("codex", StringComparison.OrdinalIgnoreCase)) result.Add("Codex");
@@ -618,80 +552,25 @@ namespace AgentTrafficLightNative {
       if (selected == null) selected = sourceTasks[0];
       var result = Clone(selected); result.Source = source; result.UpdatedAt = newestAt; return result;
     }
-    public static AgentTask LatestForTrae(List<AgentTask> sourceTasks) {
-      if (sourceTasks == null || sourceTasks.Count == 0) return null;
-      var liveAttention = sourceTasks.FindAll(delegate(AgentTask task) { return task.Status == State.Attention && (task.Id ?? "").StartsWith("trae-ui-attention", StringComparison.OrdinalIgnoreCase); });
-      if (liveAttention.Count > 0) return LatestForSource("TRAE", liveAttention);
-
-      var mcpTasks = sourceTasks.FindAll(delegate(AgentTask task) { return (task.Id ?? "").StartsWith("trae-mcp:", StringComparison.OrdinalIgnoreCase); });
-      if (mcpTasks.Count > 0) {
-        AgentTask mcp = LatestForSource("TRAE", mcpTasks);
-        var newerAttention = sourceTasks.FindAll(delegate(AgentTask task) { return task.Status == State.Attention && task.UpdatedAt > mcp.UpdatedAt; });
-        if (newerAttention.Count > 0) return LatestForSource("TRAE", newerAttention);
-        var newerChats = sourceTasks.FindAll(delegate(AgentTask task) { return (task.Id ?? "").StartsWith("trae-chat:", StringComparison.OrdinalIgnoreCase) && task.ExplicitStart && task.ReliableStart && task.StartedAt > mcp.UpdatedAt; });
-        if (newerChats.Count > 0) return LatestForSource("TRAE", newerChats);
-        return mcp;
-      }
-
-      var chatTasks = sourceTasks.FindAll(delegate(AgentTask task) { return (task.Id ?? "").StartsWith("trae-chat:", StringComparison.OrdinalIgnoreCase); });
-      if (chatTasks.Count == 0) return LatestForSource("TRAE", sourceTasks);
-
-      AgentTask chat = LatestForSource("TRAE", chatTasks);
-      var authoritative = new List<AgentTask> { chat };
-      foreach (var task in sourceTasks) {
-        if ((task.Id ?? "").StartsWith("trae-chat:", StringComparison.OrdinalIgnoreCase)) continue;
-        // TRAE keeps writing heartbeat/cache logs after a request reaches a terminal
-        // state. Only a timestamped, explicit new request may outrank the structured
-        // chat-session record; generic activity and file mtimes are never a new turn.
-        if (task.ExplicitStart && task.ReliableStart && task.StartedAt > chat.UpdatedAt) authoritative.Add(task);
-      }
-      return LatestForSource("TRAE", authoritative);
-    }
-    public static AgentTask LatestStructuredTrae(List<AgentTask> tasks) {
-      if (tasks == null) return null;
-      var chatTasks = tasks.FindAll(delegate(AgentTask task) { return task.Source == "TRAE" && (task.Id ?? "").StartsWith("trae-chat:", StringComparison.OrdinalIgnoreCase); });
-      return chatTasks.Count == 0 ? null : LatestForSource("TRAE", chatTasks);
-    }
-    public static bool TraeResolutionBeatsFallback(AgentTask structured, long latchedAt, bool previousParsedAttention) {
-      if (structured == null || structured.Status == State.Attention) return false;
-      if (structured.Status == State.Complete) return true;
-      return structured.Status == State.Running && (previousParsedAttention || (latchedAt > 0 && structured.UpdatedAt > latchedAt));
-    }
-    public static int NextTraeVisualMissCount(int current, bool observable, bool markerFound, bool newSample) {
-      if (markerFound) return 0;
-      return observable && newSample ? Math.Max(0, current) + 1 : Math.Max(0, current);
-    }
-    public static bool HasFreshTraeContinuation(List<AgentTask> tasks, long after) {
-      if (tasks == null || after <= 0) return false;
-      return tasks.Exists(delegate(AgentTask task) {
-        return task.Source == "TRAE" && task.Status == State.Running && task.UpdatedAt > after &&
-          (task.Id ?? "").StartsWith("trae-chat:", StringComparison.OrdinalIgnoreCase);
-      });
-    }
     public static AgentTask ResolveForRuntime(string source, AgentTask candidate, long runtimeStartedAt, long sourceSeenAt, AgentTask previous) {
       if (candidate == null) return previous != null && (previous.Id ?? "").StartsWith("idle:", StringComparison.OrdinalIgnoreCase) ? Clone(previous) : Idle(source);
-      if (source == "TRAE" && previous != null && previous.Status == State.Complete && candidate.Status == State.Running) {
-        bool genuineNewRequest = candidate.ExplicitStart && candidate.ReliableStart && candidate.StartedAt > previous.UpdatedAt;
-        if (!genuineNewRequest) return Clone(previous);
-      }
-      if (source == "TRAE" && previous != null && previous.Status == State.Attention && candidate.Status == State.Running) {
-        bool structuredContinuation = (candidate.Id ?? "").StartsWith("trae-chat:", StringComparison.OrdinalIgnoreCase) && candidate.UpdatedAt > previous.UpdatedAt;
-        bool genuineContinuation = structuredContinuation || (candidate.ExplicitStart && candidate.ReliableStart && candidate.StartedAt > previous.UpdatedAt);
-        if (!genuineContinuation) return Clone(previous);
+      bool traeMcp = source == "TRAE" && (candidate.Id ?? "").StartsWith("trae-mcp:", StringComparison.OrdinalIgnoreCase);
+      if (traeMcp) {
+        if (previous != null && previous.Status == State.Complete && candidate.Status == State.Running) {
+          bool newTask = !String.Equals(previous.Id, candidate.Id, StringComparison.OrdinalIgnoreCase) && candidate.UpdatedAt > previous.UpdatedAt;
+          if (!newTask) return Clone(previous);
+        }
+        if (previous != null && previous.Status == State.Attention && candidate.Status == State.Running && candidate.UpdatedAt <= previous.UpdatedAt) return Clone(previous);
+        return Clone(candidate);
       }
       if (previous != null && previous.Id == candidate.Id && previous.Status == State.Complete && candidate.Status != State.Complete && candidate.UpdatedAt <= previous.UpdatedAt) return Clone(previous);
       if (previous != null && previous.Id == candidate.Id && previous.Status == State.Attention && candidate.Status == State.Running && candidate.UpdatedAt <= previous.UpdatedAt) return Clone(previous);
       long baseline = runtimeStartedAt > 0 ? runtimeStartedAt : sourceSeenAt;
-      // TRAE is often already open when Agent Beacon starts. Its mutable session
-      // files can still contain an old running state created after the TRAE process
-      // started. Require a running event from this monitor session as well.
-      if (source == "TRAE" && sourceSeenAt > 0) baseline = Math.Max(baseline, sourceSeenAt);
-      long startupSlack = source == "TRAE" ? 0 : 5000;
-      if (candidate.Status == State.Running && baseline > 0 && candidate.UpdatedAt < baseline - startupSlack) return previous != null && (previous.Id ?? "").StartsWith("idle:", StringComparison.OrdinalIgnoreCase) ? Clone(previous) : Idle(source);
+      if (candidate.Status == State.Running && baseline > 0 && candidate.UpdatedAt < baseline - 5000) return previous != null && (previous.Id ?? "").StartsWith("idle:", StringComparison.OrdinalIgnoreCase) ? Clone(previous) : Idle(source);
       return Clone(candidate);
     }
     public static AgentTask Idle(string source) { long now = Util.Now(); return new AgentTask { Id = "idle:" + source, Source = source, SessionId = "", Title = source, Status = State.Complete, Detail = "Agent 已启动，等待新任务", Evidence = "进程检测 · 未发现本次启动后的任务事件", StartedAt = now, UpdatedAt = now }; }
-    public static AgentTask Clone(AgentTask task) { return task == null ? null : new AgentTask { Id = task.Id, Source = task.Source, SessionId = task.SessionId, Title = task.Title, Status = task.Status, Detail = task.Detail, Evidence = task.Evidence, StartedAt = task.StartedAt, UpdatedAt = task.UpdatedAt, ExplicitStart = task.ExplicitStart, ReliableStart = task.ReliableStart }; }
+    public static AgentTask Clone(AgentTask task) { return task == null ? null : new AgentTask { Id = task.Id, Source = task.Source, SessionId = task.SessionId, Title = task.Title, Status = task.Status, Detail = task.Detail, Evidence = task.Evidence, StartedAt = task.StartedAt, UpdatedAt = task.UpdatedAt, ExplicitStart = task.ExplicitStart, ReliableStart = task.ReliableStart, PendingExec = task.PendingExec }; }
   }
 
   sealed class PixelPoleControl : Control {
@@ -845,7 +724,7 @@ namespace AgentTrafficLightNative {
       var auto = new PixelToggle { Text = "开机自启动", Checked = settings.AutoStart, Location = new Point(22, 57), Width = 380 }; auto.CheckedChanged += delegate { settings.AutoStart = auto.Checked; Program.SetAutoStart(auto.Checked); Program.SaveSettings(settings); }; Controls.Add(auto);
       var compact = new PixelToggle { Text = "任务栏紧凑模式（只显示红绿灯和短灯杆）", Checked = settings.TaskbarMode, Location = new Point(22, 88), Width = 390 }; compact.CheckedChanged += delegate { settings.TaskbarMode = compact.Checked; Program.SaveSettings(settings); modeChanged(settings.TaskbarMode); }; Controls.Add(compact);
       Controls.Add(new Label { Text = "刷新频率", AutoSize = false, Location = new Point(22, 126), Size = new Size(72, 26), TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.FromArgb(148, 163, 184), BackColor = Color.Transparent });
-      int[] values = { 1000, 1500, 3000, 5000, 10000 }; string[] labels = { "1S", "1.5S", "3S", "5S", "10S" }; var intervalButtons = new List<PixelButton>();
+      int[] values = { 1500, 2000, 3000, 5000, 10000 }; string[] labels = { "1.5S", "2S", "3S", "5S", "10S" }; var intervalButtons = new List<PixelButton>();
       for (int i = 0; i < values.Length; i++) {
         int index = i; var choice = new PixelButton { Text = labels[i], Location = new Point(100 + i * 61, 124), Size = new Size(55, 30), Active = settings.RefreshMs == values[i] }; intervalButtons.Add(choice);
         choice.Click += delegate { settings.RefreshMs = values[index]; foreach (var item in intervalButtons) item.Active = false; choice.Active = true; Program.SaveSettings(settings); intervalChanged(settings.RefreshMs); }; Controls.Add(choice);
@@ -874,7 +753,7 @@ namespace AgentTrafficLightNative {
     void EndDrag(object sender, MouseEventArgs e) { dragging = false; }
     Label StatusLabel(int x, int y) { return new Label { AutoSize = false, Location = new Point(x, y), Size = new Size(126, 24), BackColor = Color.Transparent, Font = new Font("Microsoft YaHei UI", 9, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft }; }
     void SetStatus(Label label, bool installed) { label.Text = installed ? "■ 已安装" : "■ 未安装"; label.ForeColor = installed ? Color.FromArgb(67, 255, 155) : Color.FromArgb(255, 199, 35); }
-    void SetTraeStatus(Label label) { label.Text = Integration.TraeMcpStatus(); label.ForeColor = Integration.IsTraeMcpConnected() ? Color.FromArgb(67, 255, 155) : Color.FromArgb(255, 199, 35); }
+    void SetTraeStatus(Label label) { label.Text = Integration.TraeMcpStatus(); label.ForeColor = Integration.IsTraeMcpReadyAndConnected() ? Color.FromArgb(67, 255, 155) : Color.FromArgb(255, 199, 35); }
     protected override void OnPaint(PaintEventArgs e) {
       Graphics g = e.Graphics; g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
       using (var edge = new SolidBrush(Color.FromArgb(5, 8, 13))) { g.FillRectangle(edge, 0, 0, Width, 5); g.FillRectangle(edge, 0, Height - 5, Width, 5); g.FillRectangle(edge, 0, 0, 5, Height); g.FillRectangle(edge, Width - 5, 0, 5, Height); }
@@ -889,15 +768,15 @@ namespace AgentTrafficLightNative {
   }
 
   sealed class MainForm : Form {
-    readonly MonitorEngine engine = new MonitorEngine(); readonly TraeDisplayStateMachine traeDisplayState = new TraeDisplayStateMachine(); readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer(); readonly SettingsData settings; readonly PixelPoleControl widget = new PixelPoleControl(); readonly NotifyIcon tray = new NotifyIcon();
+    readonly MonitorEngine engine = new MonitorEngine(); readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer(); readonly SettingsData settings; readonly PixelPoleControl widget = new PixelPoleControl(); readonly NotifyIcon tray = new NotifyIcon();
     readonly System.Windows.Forms.Timer taskbarBlinkTimer = new System.Windows.Forms.Timer(), eventDebounceTimer = new System.Windows.Forms.Timer(); readonly Dictionary<string, NotifyIcon> taskbarLights = new Dictionary<string, NotifyIcon>(); readonly NotifyIcon taskbarLogin = new NotifyIcon(); readonly ContextMenuStrip taskbarMenu = new ContextMenuStrip();
     readonly Dictionary<string, Icon> iconCache = new Dictionary<string, Icon>(); readonly Dictionary<string, long> sourceSeenAt = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase); readonly Dictionary<string, AgentTask> resolvedStates = new Dictionary<string, AgentTask>(StringComparer.OrdinalIgnoreCase);
-    readonly long monitorStartedAt = Util.Now(); long lastScanStartedAt, traeAttentionLatchedAt, lastTraeVisualMissSample; int traeVisualMisses; MonitorWatchers watchers; List<AgentTask> currentAgents = new List<AgentTask>(), lastGoodTasks = new List<AgentTask>(); bool quitting, dragging, scanning, pendingRescan, taskbarBlinkOn = true, traeParsedAttentionActive, traeUiAttentionSuppressed; Point dragOrigin; string lastSignature = null, taskbarLayoutSignature = null, traeAttentionEvidence = null;
+    long lastScanStartedAt; MonitorWatchers watchers; List<AgentTask> currentAgents = new List<AgentTask>(), lastGoodTasks = new List<AgentTask>(); bool quitting, dragging, scanning, pendingRescan, taskbarBlinkOn = true; Point dragOrigin; string lastSignature = null, taskbarLayoutSignature = null;
     [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr handle);
 
     public MainForm(SettingsData loaded) {
       settings = loaded; if (settings.LampScale != 150 && settings.LampScale != 200) settings.LampScale = 100; float initialScale = settings.LampScale / 100f;
-      Text = "Agent Beacon v1.3.0"; Name = "AgentBeaconWindow"; Width = (int)Math.Round(38 * initialScale); Height = (int)Math.Round(88 * initialScale); BackColor = PixelPoleControl.KeyColor; TransparencyKey = PixelPoleControl.KeyColor; ForeColor = Color.White; FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; StartPosition = FormStartPosition.Manual; Location = new Point(Screen.PrimaryScreen.WorkingArea.Right - Width - 20, Screen.PrimaryScreen.WorkingArea.Top + 20); TopMost = true; DoubleBuffered = true;
+      Text = "Agent Beacon v1.3.6"; Name = "AgentBeaconWindow"; Width = (int)Math.Round(38 * initialScale); Height = (int)Math.Round(88 * initialScale); BackColor = PixelPoleControl.KeyColor; TransparencyKey = PixelPoleControl.KeyColor; ForeColor = Color.White; FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; StartPosition = FormStartPosition.Manual; Location = new Point(Screen.PrimaryScreen.WorkingArea.Right - Width - 20, Screen.PrimaryScreen.WorkingArea.Top + 20); TopMost = true; DoubleBuffered = true;
       BuildUi(); BuildTray(); BuildTaskbarMenu(); timer.Interval = settings.RefreshMs; timer.Tick += delegate { RefreshTasks(); }; timer.Start(); taskbarBlinkTimer.Interval = 500; taskbarBlinkTimer.Tick += delegate { taskbarBlinkOn = !taskbarBlinkOn; UpdateTaskbarBlink(); }; eventDebounceTimer.Interval = 900; eventDebounceTimer.Tick += delegate { eventDebounceTimer.Stop(); RefreshTasks(); };
       Shown += delegate { if (watchers == null) watchers = new MonitorWatchers(delegate(bool layoutChanged) { if (layoutChanged) engine.InvalidateDiscovery(); try { if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(delegate { if (!eventDebounceTimer.Enabled) eventDebounceTimer.Start(); })); } catch { } }); if (settings.TaskbarMode) Hide(); RefreshTasks(); };
       FormClosing += delegate(object sender, FormClosingEventArgs e) { if (!quitting) { e.Cancel = true; Hide(); tray.ShowBalloonTip(900, "Agent Beacon", "仍在托盘监控，双击灯标可恢复。", ToolTipIcon.None); } };
@@ -972,34 +851,12 @@ namespace AgentTrafficLightNative {
         var cycle = new ScanCycle(); var watch = Stopwatch.StartNew();
         try {
           cycle.Runtime = AgentProcesses.Snapshot(); cycle.Tasks = engine.Scan(out cycle.FilesRead);
-          bool previousParsedAttention = traeParsedAttentionActive;
-          bool parsedAttention = cycle.Tasks.Exists(delegate(AgentTask task) { return task.Source == "TRAE" && task.Status == State.Attention; }); traeParsedAttentionActive = parsedAttention;
-          cycle.TraeUiAttention = !parsedAttention && AgentProcesses.TraeNeedsUserAttention(cycle.Runtime);
-          cycle.TraeVisualAttention = !parsedAttention && !cycle.TraeUiAttention && AgentProcesses.TraeHasVisualAttention(cycle.Runtime);
-          cycle.TraeVisualObserved = !parsedAttention && !cycle.TraeUiAttention && AgentProcesses.TraeVisualObservationAvailable();
-          cycle.TraeVisualObservedAt = AgentProcesses.TraeVisualObservationAt();
-          long eventAt = Util.Now();
-          bool parsedCodexAttention = cycle.Tasks.Exists(delegate(AgentTask task) { return task.Source == "Codex" && task.Status == State.Attention; });
-          cycle.CodexUiAttention = !parsedCodexAttention && AgentProcesses.CodexNeedsUserAttention(cycle.Runtime);
-          if (cycle.CodexUiAttention) cycle.Tasks.Add(new AgentTask { Id = "codex-ui-attention", Source = "Codex", SessionId = "codex-ui", Title = "Codex", Status = State.Attention, Detail = "Codex 正在等待你的确认", Evidence = "Codex 可访问界面", StartedAt = eventAt, UpdatedAt = eventAt });
-          bool traeRunning = cycle.Runtime != null && cycle.Runtime.Sources.Contains("TRAE");
-          bool fallbackSignal = cycle.TraeUiAttention || cycle.TraeVisualAttention; long latchedAt = Interlocked.Read(ref traeAttentionLatchedAt);
-          bool visualEvidence = String.Equals(traeAttentionEvidence, "TRAE 可见确认标记（不保存截图）", StringComparison.Ordinal);
-          if (cycle.TraeVisualAttention) { traeVisualMisses = AgentStateRules.NextTraeVisualMissCount(traeVisualMisses, true, true, true); lastTraeVisualMissSample = 0; }
-          else if (!parsedAttention && !cycle.TraeUiAttention && visualEvidence && cycle.TraeVisualObserved && cycle.TraeVisualObservedAt > lastTraeVisualMissSample) {
-            lastTraeVisualMissSample = cycle.TraeVisualObservedAt; traeVisualMisses = AgentStateRules.NextTraeVisualMissCount(traeVisualMisses, true, false, true);
-            if (traeVisualMisses >= 2) { Interlocked.Exchange(ref traeAttentionLatchedAt, 0); traeAttentionEvidence = null; latchedAt = 0; traeVisualMisses = 0; lastTraeVisualMissSample = 0; }
-          }
-          AgentTask structuredTrae = AgentStateRules.LatestStructuredTrae(cycle.Tasks);
-          bool structuredResolution = !parsedAttention && AgentStateRules.TraeResolutionBeatsFallback(structuredTrae, latchedAt, previousParsedAttention);
-          if (!traeRunning) { Interlocked.Exchange(ref traeAttentionLatchedAt, 0); traeAttentionEvidence = null; traeUiAttentionSuppressed = false; traeParsedAttentionActive = false; traeVisualMisses = 0; lastTraeVisualMissSample = 0; latchedAt = 0; }
-          else {
-            if (!fallbackSignal) traeUiAttentionSuppressed = false;
-            if (structuredResolution) { Interlocked.Exchange(ref traeAttentionLatchedAt, 0); traeAttentionEvidence = null; traeUiAttentionSuppressed = true; latchedAt = 0; }
-            else if (fallbackSignal && !traeUiAttentionSuppressed) { Interlocked.Exchange(ref traeAttentionLatchedAt, eventAt); traeAttentionEvidence = cycle.TraeVisualAttention ? "TRAE 可见确认标记（不保存截图）" : "TRAE 可访问界面"; latchedAt = eventAt; }
-          }
-          bool latchedAttention = !parsedAttention && traeRunning && latchedAt > 0 && eventAt - latchedAt < 10 * 60 * 1000;
-          if (latchedAttention) cycle.Tasks.Add(new AgentTask { Id = "trae-ui-attention", Source = "TRAE", SessionId = "trae-ui", Title = "TRAE Work", Status = State.Attention, Detail = "TRAE 正在等待你的弹窗回复", Evidence = traeAttentionEvidence ?? "TRAE 确认弹窗", StartedAt = latchedAt, UpdatedAt = latchedAt });
+          var codexTasks = cycle.Tasks.FindAll(delegate(AgentTask task) { return task.Source == "Codex"; });
+          AgentTask latestCodex = AgentStateRules.LatestForSource("Codex", codexTasks);
+          bool codexPendingExec = latestCodex != null && latestCodex.PendingExec && latestCodex.Status != State.Complete;
+          bool codexAlreadyAttention = latestCodex != null && latestCodex.Status == State.Attention;
+          cycle.CodexUiAttention = codexPendingExec && !codexAlreadyAttention && AgentProcesses.CodexNeedsUserAttention(cycle.Runtime);
+          if (cycle.CodexUiAttention) { long eventAt = Util.Now(); cycle.Tasks.Add(new AgentTask { Id = "codex-ui-attention", Source = "Codex", SessionId = "codex-ui", Title = "Codex", Status = State.Attention, Detail = "Codex 正在等待你的确认", Evidence = "Codex 当前可见审批卡", StartedAt = eventAt, UpdatedAt = eventAt }); }
         } catch (Exception ex) { cycle.Error = ex.GetType().Name + ": " + ex.Message; }
         watch.Stop(); cycle.DurationMs = watch.ElapsedMilliseconds;
         try { if (!IsDisposed) BeginInvoke(new Action<ScanCycle>(FinishCycle), cycle); else scanning = false; } catch { scanning = false; }
@@ -1016,10 +873,9 @@ namespace AgentTrafficLightNative {
         long seenAt; if (!sourceSeenAt.TryGetValue(source, out seenAt)) { seenAt = runtime.CapturedAt > 0 ? runtime.CapturedAt : Util.Now(); sourceSeenAt[source] = seenAt; }
         long runtimeStarted = 0; runtime.StartedAt.TryGetValue(source, out runtimeStarted);
         var candidate = detected.Find(delegate(AgentTask t) { return t.Source == source; }); AgentTask previous = null; resolvedStates.TryGetValue(source, out previous);
-        var resolved = source == "TRAE" ? traeDisplayState.Resolve(candidate, previous, runtimeStarted, seenAt, runtime.CapturedAt > 0 ? runtime.CapturedAt : Util.Now()) : AgentStateRules.ResolveForRuntime(source, candidate, runtimeStarted, seenAt, previous); agents.Add(resolved); resolvedStates[source] = AgentStateRules.Clone(resolved);
-        if (runtime.RestrictedSources.Contains(source) && source == "TRAE" && resolved.Status != State.Attention) resolved.Evidence = (resolved.Evidence ?? "进程检测") + " · TRAE 管理员权限限制界面读取";
+        var resolved = AgentStateRules.ResolveForRuntime(source, candidate, runtimeStarted, seenAt, previous); agents.Add(resolved); resolvedStates[source] = AgentStateRules.Clone(resolved);
       }
-      foreach (string source in new List<string>(sourceSeenAt.Keys)) if (!runtime.Sources.Contains(source)) { sourceSeenAt.Remove(source); resolvedStates.Remove(source); if (source == "TRAE") traeDisplayState.Reset(); }
+      foreach (string source in new List<string>(sourceSeenAt.Keys)) if (!runtime.Sources.Contains(source)) { sourceSeenAt.Remove(source); resolvedStates.Remove(source); }
       var claudeTask = agents.Find(delegate(AgentTask task) { return task.Source == "Claude Code"; }); if (claudeTask != null && claudeTask.Status == State.Attention && AgentProcesses.ClaudeHasActiveToolProcess(claudeTask.UpdatedAt)) { claudeTask.Status = State.Running; claudeTask.Detail = "Shell 或工具正在执行"; }
       currentAgents = agents;
       int red = agents.FindAll(delegate(AgentTask t) { return t.Status == State.Complete; }).Count, yellow = agents.FindAll(delegate(AgentTask t) { return t.Status == State.Attention; }).Count, green = agents.FindAll(delegate(AgentTask t) { return t.Status == State.Running; }).Count;
@@ -1034,10 +890,7 @@ namespace AgentTrafficLightNative {
       var result = new List<AgentTask>();
       foreach (string source in new[] { "TRAE", "Codex", "Claude Code", "OpenCode" }) {
         var sourceTasks = tasks.FindAll(delegate(AgentTask t) { return t.Source == source; }); if (sourceTasks.Count == 0) continue;
-        // TRAE's chat model, timestamped logs and live UI attention signal must compete
-        // together. Restricting this list to chatTasks discarded the popup signal and let
-        // an old completed chat request mask a current "waiting for your reply" dialog.
-        result.Add(source == "TRAE" ? AgentStateRules.LatestForTrae(sourceTasks) : AgentStateRules.LatestForSource(source, sourceTasks));
+        result.Add(AgentStateRules.LatestForSource(source, sourceTasks));
       }
       return result;
     }
@@ -1047,11 +900,58 @@ namespace AgentTrafficLightNative {
 
   static class Integration {
     static void Extract(string resource, string target) { Directory.CreateDirectory(Path.GetDirectoryName(target)); using (var input = Assembly.GetExecutingAssembly().GetManifestResourceStream(resource)) using (var output = File.Create(target)) input.CopyTo(output); }
-    static string TraeMcpDirectory { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentTrafficLight", "integrations"); } }
-    static string TraeMcpExecutable { get { return Path.Combine(TraeMcpDirectory, "Agent-Beacon-MCP-1.3.0.exe"); } }
+    static string TraeMcpDirectory { get { string configured = Environment.GetEnvironmentVariable("AGENT_BEACON_TRAE_MCP_DIR"); return String.IsNullOrWhiteSpace(configured) ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentTrafficLight", "integrations") : Path.GetFullPath(configured); } }
+    static string TraeMcpExecutable { get { return Path.Combine(TraeMcpDirectory, "Agent-Beacon-MCP.exe"); } }
+    static string TraeMcpPendingExecutable { get { return Path.Combine(TraeMcpDirectory, "Agent-Beacon-MCP.pending.exe"); } }
+    static string LegacyTraeMcpExecutable { get { return Path.Combine(TraeMcpDirectory, "Agent-Beacon-MCP-1.3.0.exe"); } }
     static string TraeMcpConfigPath { get { return Path.Combine(TraeMcpDirectory, "trae-mcp-config.json"); } }
     static string TraeRulePath { get { return Path.Combine(TraeMcpDirectory, "trae-agent-beacon-rule.md"); } }
-    public static bool IsTraeMcpPrepared() { return File.Exists(TraeMcpExecutable) && File.Exists(TraeMcpConfigPath); }
+    static bool SameFile(string left, string right) {
+      try {
+        var a = new FileInfo(left); var b = new FileInfo(right); if (!a.Exists || !b.Exists || a.Length != b.Length) return false;
+        using (var sha = SHA256.Create()) using (var first = File.OpenRead(left)) using (var second = File.OpenRead(right)) {
+          byte[] x = sha.ComputeHash(first), y = sha.ComputeHash(second); if (x.Length != y.Length) return false; for (int i = 0; i < x.Length; i++) if (x[i] != y[i]) return false; return true;
+        }
+      } catch { return false; }
+    }
+    static bool TryActivateTraeMcp(string source) {
+      try {
+        if (!File.Exists(TraeMcpExecutable)) File.Move(source, TraeMcpExecutable);
+        else File.Replace(source, TraeMcpExecutable, null, true);
+        return true;
+      } catch { return false; }
+    }
+    static void DeleteLegacyTraeMcp() { try { if (File.Exists(LegacyTraeMcpExecutable)) File.Delete(LegacyTraeMcpExecutable); } catch { } }
+    static string EnsureTraeMcpHelper(bool installIfMissing) {
+      bool installed = File.Exists(TraeMcpExecutable) || File.Exists(TraeMcpPendingExecutable) || File.Exists(TraeMcpConfigPath) || File.Exists(LegacyTraeMcpExecutable);
+      if (!installIfMissing && !installed) return "not-installed";
+      Directory.CreateDirectory(TraeMcpDirectory);
+      string fresh = Path.Combine(TraeMcpDirectory, "Agent-Beacon-MCP." + Process.GetCurrentProcess().Id + "." + Guid.NewGuid().ToString("N") + ".tmp");
+      try {
+        Extract("trae-mcp-host.exe", fresh);
+        if (File.Exists(TraeMcpExecutable) && SameFile(fresh, TraeMcpExecutable)) {
+          File.Delete(fresh); try { if (File.Exists(TraeMcpPendingExecutable)) File.Delete(TraeMcpPendingExecutable); } catch { }
+          DeleteLegacyTraeMcp(); return "current";
+        }
+        if (File.Exists(TraeMcpPendingExecutable)) {
+          if (SameFile(fresh, TraeMcpPendingExecutable)) File.Delete(fresh);
+          else { File.Delete(TraeMcpPendingExecutable); File.Move(fresh, TraeMcpPendingExecutable); }
+        } else File.Move(fresh, TraeMcpPendingExecutable);
+        if (TryActivateTraeMcp(TraeMcpPendingExecutable)) { DeleteLegacyTraeMcp(); return "updated"; }
+        return "pending";
+      } finally { try { if (File.Exists(fresh)) File.Delete(fresh); } catch { } }
+    }
+    static bool IsTraeMcpConfigCurrent() {
+      try {
+        if (!File.Exists(TraeMcpConfigPath)) return false;
+        var root = Util.Json.DeserializeObject(File.ReadAllText(TraeMcpConfigPath, Encoding.UTF8)) as IDictionary<string, object>;
+        IDictionary<string, object> servers = Util.D(root, "mcpServers"); IDictionary<string, object> server = Util.D(servers, "agent_beacon"); string command = Util.S(server, "command", "");
+        return !String.IsNullOrWhiteSpace(command) && String.Equals(Path.GetFullPath(command), Path.GetFullPath(TraeMcpExecutable), StringComparison.OrdinalIgnoreCase);
+      } catch { return false; }
+    }
+    public static void RefreshTraeMcpHelper() { try { EnsureTraeMcpHelper(false); } catch { } }
+    public static bool IsTraeMcpUpdatePending() { return File.Exists(TraeMcpPendingExecutable); }
+    public static bool IsTraeMcpPrepared() { return File.Exists(TraeMcpExecutable) && IsTraeMcpConfigCurrent() && !IsTraeMcpUpdatePending(); }
     public static bool IsTraeMcpConnected() {
       try {
         if (!Directory.Exists(Util.BridgeDir)) return false;
@@ -1063,30 +963,28 @@ namespace AgentTrafficLightNative {
       } catch { }
       return false;
     }
-    public static string TraeMcpStatus() { return IsTraeMcpConnected() ? "■ 已连接" : IsTraeMcpPrepared() ? "■ 待添加到 TRAE" : "■ 未配置"; }
+    public static bool IsTraeMcpReadyAndConnected() { return IsTraeMcpPrepared() && IsTraeMcpConnected(); }
+    public static string TraeMcpStatus() {
+      if (IsTraeMcpUpdatePending()) return "■ 关闭 TRAE 后重启灯，完成 MCP 更新";
+      if (File.Exists(TraeMcpExecutable) && !IsTraeMcpConfigCurrent()) return "■ 需重新配置 TRAE MCP";
+      return IsTraeMcpReadyAndConnected() ? "■ 已连接" : IsTraeMcpPrepared() ? "■ 待添加到 TRAE" : "■ 未配置";
+    }
     public static string InstallTraeMcp() {
       try {
         Directory.CreateDirectory(TraeMcpDirectory);
-        string target = Path.GetFullPath(TraeMcpExecutable);
-        if (!File.Exists(target)) Extract("trae-mcp-host.exe", target);
+        string target = Path.GetFullPath(TraeMcpExecutable), update = EnsureTraeMcpHelper(true);
         var server = new Dictionary<string, object>(); server["command"] = target; server["args"] = new[] { "--mcp-server" };
         var servers = new Dictionary<string, object>(); servers["agent_beacon"] = server;
         var root = new Dictionary<string, object>(); root["mcpServers"] = servers;
         string config = Util.Json.Serialize(root); File.WriteAllText(TraeMcpConfigPath, config, new UTF8Encoding(false)); Clipboard.SetText(config);
-        return "TRAE MCP 配置已复制。\n\n请在 TRAE Work 中打开：\n设置 > MCP > 本地 > 创建 > 手动配置\n粘贴并确认，然后在 设置 > 对话流 中开启“自动运行 MCP”。\n\n最后点击“复制 TRAE 状态规则”，并粘贴到 TRAE 全局规则。";
+        if (update == "pending") return "新版 TRAE MCP 已暂存，但旧 Helper 正被占用。\n\n请先关闭 TRAE，再重启 Agent Beacon，然后重新点击此按钮复制配置。";
+        return "TRAE MCP 配置已复制，固定路径为：\n" + target + "\n\n请删除 TRAE 中旧的 agent_beacon MCP，重新创建本地手动配置并粘贴。然后在 设置 > 对话流 中开启“自动运行 MCP”。\n\n最后点击“复制 TRAE 状态规则”，并粘贴到 TRAE 全局规则。";
       } catch (Exception ex) { return "准备 TRAE MCP 失败：" + ex.Message + "\n如果旧 MCP 正在运行，请先关闭 TRAE 后重试。"; }
     }
     public static string CopyTraeRule() {
       try {
         Directory.CreateDirectory(TraeMcpDirectory); string rule =
-          "你正在 TRAE Work 中运行，并已配置 MCP 工具 agent_beacon_report_state。\n\n" +
-          "必须在每个用户任务的状态发生变化时调用该工具：\n" +
-          "1. 接收一个新任务后、开始思考或执行前：state=running。\n" +
-          "2. 需要用户批准、确认、回答或选择，并将暂停继续执行前：state=waiting。\n" +
-          "3. 用户回复后，在恢复任何思考、命令或工具调用前：state=running。\n" +
-          "4. 最终答复前，确认不会再继续执行命令或调用工具时：state=completed。\n" +
-          "5. 任务失败、取消或异常终止前：分别使用 state=failed 或 state=cancelled。\n\n" +
-          "同一任务的所有调用必须使用相同且非空的 session_id；每个新用户任务必须生成新的 session_id。先调用状态工具，再显示等待提示或最终答复。阶段性总结、单个步骤完成或工具调用结束不代表任务完成，不得上报 completed。";
+          "使用 agent_beacon_report_state 上报状态，每个用户任务使用新的 session_id，任务内保持不变。时序规则：开始前报 running；准备确认消息或执行延时期间保持 running，只有所有准备完成且下一步就是显示需要用户回复的确认消息时才报 waiting，waiting 后禁止思考、等待、执行命令或调用其他工具，必须立即显示确认；上一状态为 waiting 时，收到用户任何回复后的第一步必须用相同 session_id 报 running；所有工作结束且最终答复内容已完全准备好后，报 completed 作为最后一次工具调用并立即输出最终答复，此后禁止继续处理；失败/取消前报 failed/cancelled。中间步骤不得报 completed。";
         File.WriteAllText(TraeRulePath, rule, new UTF8Encoding(false)); Clipboard.SetText(rule);
         return "TRAE 状态规则已复制。\n\n请打开 TRAE Work：设置 > 规则，创建一条本地全局规则并粘贴。\n启用规则后，新任务将通过 MCP 主动上报绿、黄、红状态。";
       } catch (Exception ex) { return "复制 TRAE 规则失败：" + ex.Message; }
@@ -1121,8 +1019,14 @@ namespace AgentTrafficLightNative {
   }
 
   static class Program {
-    const string MutexName = "Local\\AgentBeaconV130", ShowEventName = "Local\\AgentBeaconShowV130", ExitEventName = "Local\\AgentBeaconExitV130"; static readonly string DataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentTrafficLight");
+    const string MutexName = "Local\\AgentBeaconV136", ShowEventName = "Local\\AgentBeaconShowV136", ExitEventName = "Local\\AgentBeaconExitV136"; static readonly string DataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentTrafficLight");
     static readonly string[] PreviousExitEvents = {
+      "Local\\AgentBeaconExitV135",
+      "Local\\AgentBeaconExitV134",
+      "Local\\AgentBeaconExitV133",
+      "Local\\AgentBeaconExitV132",
+      "Local\\AgentBeaconExitV131",
+      "Local\\AgentBeaconExitV130",
       "Local\\AgentBeaconExitV123",
       "Local\\AgentBeaconExitV122",
       "Local\\AgentBeaconExitV121",
@@ -1149,8 +1053,8 @@ namespace AgentTrafficLightNative {
       bool created; using (var mutex = new Mutex(true, MutexName, out created)) {
         if (!created) { try { EventWaitHandle.OpenExisting(ShowEventName).Set(); } catch { } return; }
         try {
-          Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false); var loaded = LoadSettings(); if (loaded.RefreshMs < 1000) loaded.RefreshMs = 1000;
-          SaveSettings(loaded); if (loaded.AutoStart) SetAutoStart(true); Integration.RefreshClaudeScript(); Integration.RefreshOpenCodeScript(); if (Array.IndexOf(args, "--taskbar") >= 0) loaded.TaskbarMode = true; var form = new MainForm(loaded);
+          Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false); var loaded = LoadSettings(); if (loaded.RefreshMs < 1500) loaded.RefreshMs = 1500;
+          SaveSettings(loaded); if (loaded.AutoStart) SetAutoStart(true); Integration.RefreshTraeMcpHelper(); Integration.RefreshClaudeScript(); Integration.RefreshOpenCodeScript(); if (Array.IndexOf(args, "--taskbar") >= 0) loaded.TaskbarMode = true; var form = new MainForm(loaded);
           using (var showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName)) using (var exitEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ExitEventName)) {
             var listener = new Thread(new ThreadStart(delegate { while (!form.IsDisposed) { int signal = WaitHandle.WaitAny(new WaitHandle[] { showEvent, exitEvent }); if (!form.IsDisposed && form.IsHandleCreated) { if (signal == 0) form.BeginInvoke(new Action(delegate { form.Show(); form.WindowState = FormWindowState.Normal; form.Activate(); })); else { form.BeginInvoke(new Action(form.ExitApplication)); return; } } } })); listener.IsBackground = true; listener.Start();
             if (Array.IndexOf(args, "--hidden") >= 0) form.Load += delegate { form.BeginInvoke(new Action(form.Hide)); }; Application.Run(form);

@@ -1,0 +1,5 @@
+{"timestamp":"2026-07-22T03:05:30.000Z","type":"session_meta","payload":{"id":"codex-escalation-replay"}}
+{"timestamp":"2026-07-22T03:05:31.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-escalation"}}
+{"timestamp":"2026-07-22T03:05:32.000Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"call-escalation","name":"exec","input":"const r = await tools.exec_command({\"cmd\":\"Get-Date\",\"sandbox_permissions\":\"require_escalated\",\"justification\":\"Allow this harmless command?\"});"}}
+{"timestamp":"2026-07-22T03:05:33.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call-escalation","output":"completed"}}
+{"timestamp":"2026-07-22T03:05:34.000Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"done"}}

@@ -11,7 +11,7 @@ namespace AgentBeaconTraeMcp {
   // The settings installer extracts it locally, and TRAE communicates with it
   // through newline-delimited JSON-RPC over stdio.
   static class TraeMcpHost {
-    const string Version = "1.3.0";
+    const string Version = "1.3.6";
     static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = 4 * 1024 * 1024 };
     static readonly string ProcessSession = "mcp-" + Process.GetCurrentProcess().Id + "-" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     static string Home { get { string configured = Environment.GetEnvironmentVariable("AGENT_TRAFFIC_LIGHT_HOME"); if (!String.IsNullOrWhiteSpace(configured)) return configured; string profile = Environment.GetEnvironmentVariable("USERPROFILE"); return String.IsNullOrWhiteSpace(profile) ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) : profile; } }
@@ -45,11 +45,10 @@ namespace AgentBeaconTraeMcp {
       }
       if (method == "ping") return new Dictionary<string, object>();
       if (method == "tools/list") {
-        var stateProperty = Obj("type", "string", "enum", new[] { "running", "waiting", "completed", "failed", "cancelled" }, "description", "当前任务状态：执行中、等待用户、完成、失败或取消。");
-        var stringProperty = Obj("type", "string");
-        var properties = Obj("state", stateProperty, "session_id", stringProperty, "task_id", stringProperty, "title", stringProperty, "detail", stringProperty);
-        var schema = Obj("type", "object", "properties", properties, "required", new[] { "state" }, "additionalProperties", false);
-        var tool = Obj("name", "agent_beacon_report_state", "description", "向本机 Agent Beacon 上报 TRAE 当前任务生命周期。每次开始执行、等待用户、收到回复恢复执行、完成、失败或取消时都应立即调用。", "inputSchema", schema);
+        var stateProperty = Obj("type", "string", "enum", new[] { "running", "waiting", "completed", "failed", "cancelled" });
+        var properties = Obj("state", stateProperty, "session_id", Obj("type", "string"));
+        var schema = Obj("type", "object", "properties", properties, "required", new[] { "state", "session_id" }, "additionalProperties", false);
+        var tool = Obj("name", "agent_beacon_report_state", "description", "上报任务状态。", "inputSchema", schema);
         return Obj("tools", new object[] { tool });
       }
       if (method == "tools/call") return CallTool(parameters);
@@ -69,12 +68,13 @@ namespace AgentBeaconTraeMcp {
       else if (input == "cancelled") { status = "complete"; fallback = "任务已取消"; }
       else throw new ArgumentException("state must be running, waiting, completed, failed or cancelled");
 
-      string session = SafeId(S(arguments, "session_id", ProcessSession), ProcessSession), taskId = SafeId(S(arguments, "task_id", session), session);
+      string session = SafeId(S(arguments, "session_id", ProcessSession), ProcessSession), taskId = session;
       long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), started = now; string path = Path.Combine(BridgeDir, "trae-mcp-" + Hash(session) + ".json");
       try { if (File.Exists(path)) { var old = Json.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)) as IDictionary<string, object>; if (old != null && S(old, "sessionId", "") == session) started = N(old, "startedAt", now); } } catch { }
-      var row = Obj("source", "TRAE", "integration", "mcp", "id", "trae-mcp:" + taskId, "sessionId", session, "title", Clean(S(arguments, "title", ""), "TRAE Work"), "status", status, "detail", Clean(S(arguments, "detail", ""), fallback), "startedAt", started, "updatedAt", now, "explicitStart", true, "reliableStart", true, "reportedState", input);
+      var row = Obj("source", "TRAE", "integration", "mcp", "id", "trae-mcp:" + taskId, "sessionId", session, "title", "TRAE Work", "status", status, "detail", fallback, "startedAt", started, "updatedAt", now, "explicitStart", true, "reliableStart", true, "reportedState", input);
       AtomicWrite(path, Json.Serialize(row));
-      var content = Obj("type", "text", "text", "Agent Beacon 已记录：" + input + "（" + session + "）");
+      string reply = input == "waiting" ? "ok; 立即显示确认；回复后先 running" : input == "completed" ? "ok; 立即输出最终答复" : "ok";
+      var content = Obj("type", "text", "text", reply);
       return Obj("content", new object[] { content }, "isError", false);
     }
 
@@ -82,7 +82,6 @@ namespace AgentBeaconTraeMcp {
     static string S(IDictionary<string, object> row, string key, string fallback) { object value; return row != null && row.TryGetValue(key, out value) && value != null ? Convert.ToString(value) : fallback; }
     static IDictionary<string, object> D(IDictionary<string, object> row, string key) { object value; return row != null && row.TryGetValue(key, out value) ? value as IDictionary<string, object> : null; }
     static long N(IDictionary<string, object> row, string key, long fallback) { object value; long parsed; return row != null && row.TryGetValue(key, out value) && value != null && Int64.TryParse(Convert.ToString(value), out parsed) ? parsed : fallback; }
-    static string Clean(string value, string fallback) { if (String.IsNullOrWhiteSpace(value)) return fallback; value = value.Trim(); return value.Length > 64 ? value.Substring(0, 61) + "…" : value; }
     static string SafeId(string value, string fallback) { if (String.IsNullOrWhiteSpace(value)) return fallback; var text = new StringBuilder(); foreach (char c in value.Trim()) if (Char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '.' || c == ':') text.Append(c); if (text.Length < 3) return fallback; return text.Length > 128 ? text.ToString(0, 128) : text.ToString(); }
     static string Hash(string value) { using (var sha = SHA256.Create()) { byte[] bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(value)); var text = new StringBuilder(); for (int i = 0; i < 10; i++) text.Append(bytes[i].ToString("x2")); return text.ToString(); } }
     static void AtomicWrite(string path, string content) { Directory.CreateDirectory(Path.GetDirectoryName(path)); string temp = path + "." + Process.GetCurrentProcess().Id + ".tmp"; File.WriteAllText(temp, content, new UTF8Encoding(false)); if (File.Exists(path)) { try { File.Replace(temp, path, null); return; } catch { } } if (File.Exists(path)) File.Delete(path); File.Move(temp, path); }

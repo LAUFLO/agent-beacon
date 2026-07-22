@@ -27,20 +27,29 @@ try {
   if ($initialize.result.serverInfo.name -ne 'agent-beacon-trae') { throw 'TRAE MCP initialize response is invalid.' }
   $tools = Invoke-Mcp '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
   if ($tools.result.tools[0].name -ne 'agent_beacon_report_state') { throw 'TRAE MCP status tool was not advertised.' }
+  $propertyNames = @($tools.result.tools[0].inputSchema.properties.PSObject.Properties.Name | Sort-Object)
+  if (($propertyNames -join ',') -ne 'session_id,state') { throw "TRAE MCP schema was not minimized: $($propertyNames -join ',')" }
+  if (($tools.result.tools[0].inputSchema.required -join ',') -ne 'state,session_id') { throw 'TRAE MCP schema does not require state and session_id.' }
 
   $states = @()
   foreach ($spec in @(
     @('running','3'), @('waiting','4'), @('running','5'), @('completed','6')
   )) {
-    $payload = '{"jsonrpc":"2.0","id":' + $spec[1] + ',"method":"tools/call","params":{"name":"agent_beacon_report_state","arguments":{"state":"' + $spec[0] + '","session_id":"protocol-session","task_id":"protocol-task"}}}'
+    $payload = '{"jsonrpc":"2.0","id":' + $spec[1] + ',"method":"tools/call","params":{"name":"agent_beacon_report_state","arguments":{"state":"' + $spec[0] + '","session_id":"protocol-task"}}}'
     $reply = Invoke-Mcp $payload
     if ($reply.result.isError) { throw "TRAE MCP tool failed for state $($spec[0])." }
+    $replyText = [string]$reply.result.content[0].text
+    if ($spec[0] -eq 'waiting') {
+      if (-not $replyText.StartsWith('ok;') -or $replyText -notmatch 'running') { throw 'TRAE MCP waiting response did not reinforce running-after-reply.' }
+    } elseif ($spec[0] -eq 'completed') {
+      if (-not $replyText.StartsWith('ok;') -or $replyText.Length -le 4) { throw 'TRAE MCP completed response did not reinforce immediate final output.' }
+    } elseif ($replyText -ne 'ok') { throw 'TRAE MCP normal response was not minimized to ok.' }
     $eventFile = Get-ChildItem -LiteralPath (Join-Path $homePath '.agent-traffic-light\events') -Filter 'trae-mcp-*.json' | Select-Object -First 1 -ExpandProperty FullName
     $event = Get-Content -LiteralPath $eventFile -Encoding UTF8 -Raw | ConvertFrom-Json
     $states += $event.status
   }
   if (($states -join ',') -ne 'running,attention,running,complete') { throw "TRAE MCP protocol lifecycle failed: $($states -join ' -> ')" }
-  Write-Host 'PASS TRAE MCP stdio handshake and green -> yellow -> green -> red lifecycle'
+  Write-Host 'PASS minimized TRAE MCP schema, prompt/final timing reminders and green -> yellow -> green -> red lifecycle'
 
   $process.StandardInput.Close()
   if (-not $process.WaitForExit(5000)) { $process.Kill(); throw 'TRAE MCP helper did not exit after stdin closed.' }
