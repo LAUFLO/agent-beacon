@@ -52,8 +52,8 @@ namespace AgentTrafficLightNative {
 
     public static void StyleMenu(ContextMenuStrip menu) {
       menu.Renderer = new PixelMenuRenderer(); menu.ShowImageMargin = false; menu.BackColor = Paper; menu.ForeColor = Ink; menu.DropShadowEnabled = false;
-      menu.Font = StrongFont; menu.Padding = new Padding(4); menu.MinimumSize = new Size(158, 0);
-      foreach (ToolStripItem item in menu.Items) { item.BackColor = Paper; item.ForeColor = Ink; item.Padding = new Padding(10, 4, 10, 4); item.Margin = new Padding(1); }
+      menu.Font = StrongFont; menu.Padding = new Padding(3); menu.MinimumSize = Size.Empty;
+      foreach (ToolStripItem item in menu.Items) { item.AutoSize = false; item.Size = new Size(136, 29); item.BackColor = Paper; item.ForeColor = Ink; item.Padding = new Padding(8, 3, 8, 3); item.Margin = Padding.Empty; }
     }
   }
 
@@ -61,7 +61,7 @@ namespace AgentTrafficLightNative {
     protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e) { e.Graphics.Clear(PixelTheme.Paper); }
     protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e) { using (var pen = new Pen(PixelTheme.Ink, 3)) e.Graphics.DrawRectangle(pen, 1, 1, e.ToolStrip.Width - 3, e.ToolStrip.Height - 3); }
     protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e) {
-      Rectangle area = new Rectangle(3, 2, e.Item.Width - 6, e.Item.Height - 4);
+      Rectangle area = new Rectangle(2, 1, e.Item.Width - 4, e.Item.Height - 2);
       using (var fill = new SolidBrush(e.Item.Selected ? PixelTheme.PaleGreen : PixelTheme.Paper)) e.Graphics.FillRectangle(fill, area);
       if (e.Item.Selected) using (var pen = new Pen(PixelTheme.Ink, 2)) e.Graphics.DrawRectangle(pen, area.X, area.Y, area.Width - 1, area.Height - 1);
     }

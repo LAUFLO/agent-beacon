@@ -12,10 +12,11 @@ $all = @('AgentTrafficLight.cs','AgentUi.cs','StateHistory.cs','UpdateService.cs
 if (($all -join "`n") -match 'MessageBox\.Show') { throw 'A native MessageBox remains and breaks the unified pixel style.' }
 if ($ui -notmatch 'BackColor = PixelTheme\.Paper' -or $ui -notmatch 'PixelTheme\.PaintWindow') { throw 'Settings page is not using the white pixel theme.' }
 if ($ui -notmatch 'ClientSize = new Size\(760, 500\)' -or $ui -match 'PixelTheme\.Label\(') { throw 'Settings page still contains redundant explanatory labels or excess height.' }
-if ($history -notmatch 'ClientSize = new Size\(760, 600\)' -or $history -notmatch 'FormBorderStyle = FormBorderStyle\.None' -or $history -notmatch 'MaximizeBox = false; MinimizeBox = false') { throw 'Status center size/style is not fixed.' }
+if ($history -notmatch 'ClientSize = new Size\(700, 520\)' -or $history -notmatch 'FormBorderStyle = FormBorderStyle\.None' -or $history -notmatch 'MaximizeBox = false; MinimizeBox = false') { throw 'Status center compact size/style is not fixed.' }
 if ($history -notmatch 'DiagnosticsHub\.Report\(\)' -or $ui -match 'DiagnosticsHub\.Report\(\)') { throw 'Live diagnostics were not moved into the status center.' }
 if ($theme -notmatch 'sealed class PixelDialog' -or $theme -notmatch 'Paper = Color\.FromArgb\(255, 255, 255\)' -or $theme -notmatch 'FillRectangle\(ink, 0, 0, width, 6\)') { throw 'Heavy white pixel dialog theme is incomplete.' }
 if ($theme -notmatch 'sealed class PixelMenuRenderer' -or $ui -notmatch 'PixelTheme\.StyleMenu\(trayMenu\)' -or $ui -notmatch 'PixelTheme\.StyleMenu\(taskbarMenu\)' -or $ui -notmatch 'widget\.ContextMenuStrip = trayMenu') { throw 'Tray menus do not use the pixel renderer.' }
+if ($theme -notmatch 'item\.AutoSize = false' -or $theme -notmatch 'item\.Size = new Size\(136, 29\)' -or $theme -notmatch 'Rectangle area = new Rectangle\(2, 1, e\.Item\.Width - 4, e\.Item\.Height - 2\)') { throw 'Pixel menu width and selected background are not compact and aligned.' }
 if ($ui -notmatch 'spacious' -and $theme -notmatch 'spacious') { throw 'Pixel dialogs do not support a compact layout.' }
 $ownedUi = $ui + $history + $theme
 if ($ownedUi -match 'Microsoft YaHei UI|Consolas' -or $theme -notmatch 'FontName = "SimSun"' -or $theme -notmatch 'MonoFontName = "NSimSun"') { throw 'App-owned UI does not use the unified CJK pixel font family.' }
