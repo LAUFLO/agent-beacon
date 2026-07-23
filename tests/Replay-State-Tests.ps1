@@ -48,8 +48,10 @@ foreach ($name in @('TraeNeedsUserAttention','TraeHasVisualAttention')) {
 }
 $codexUiProbe = $processType.GetMethod('CodexNeedsUserAttention', [Reflection.BindingFlags]'Static,NonPublic,Public')
 $codexPromptText = $processType.GetMethod('IsCodexApprovalPromptText', [Reflection.BindingFlags]'Static,NonPublic,Public')
-if (-not $codexUiProbe -or -not $codexPromptText -or -not ($assembly.GetReferencedAssemblies().Name -match '^UIAutomation')) { throw 'Minimal Codex approval probe is missing.' }
-if (-not $codexPromptText.Invoke($null, @('Do you want to allow ChatGPT to run this command?')) -or -not $codexPromptText.Invoke($null, @('Approval required by Codex')) -or -not $codexPromptText.Invoke($null, @('是否允许补充当前用户 PATH，使安装后的 kdocs-cli 可在新终端中直接运行？'))) { throw 'Codex approval prompt text was not recognized.' }
+$codexActionText = $processType.GetMethod('IsCodexApprovalActionText', [Reflection.BindingFlags]'Static,NonPublic,Public')
+if (-not $codexUiProbe -or -not $codexPromptText -or -not $codexActionText -or -not ($assembly.GetReferencedAssemblies().Name -match '^UIAutomation')) { throw 'Minimal Codex approval probe is missing.' }
+if (-not $codexPromptText.Invoke($null, @('Do you want to allow ChatGPT to run this command?')) -or -not $codexPromptText.Invoke($null, @('Allow GitHub to create a pull request?')) -or -not $codexPromptText.Invoke($null, @('Approval required by Codex')) -or -not $codexPromptText.Invoke($null, @('是否允许补充当前用户 PATH，使安装后的 kdocs-cli 可在新终端中直接运行？')) -or $codexPromptText.Invoke($null, @('GitHub can create a pull request.'))) { throw 'Codex approval prompt text was not recognized safely.' }
+if (-not $codexActionText.Invoke($null, @('允许一次')) -or -not $codexActionText.Invoke($null, @('始终允许')) -or $codexActionText.Invoke($null, @('展开'))) { throw 'Codex approval action text was not recognized safely.' }
 Write-Host 'PASS TRAE fallbacks are absent and minimal Codex approval probe is present'
 
 function Invoke-Replay([string]$source, [string[]]$files, [string]$target, [string[]]$expected) {
