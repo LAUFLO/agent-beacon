@@ -9,7 +9,7 @@ $version = $versionMatch.Matches[0].Groups[1].Value
 $helper = Join-Path $PSScriptRoot 'integrations\Agent-Beacon-MCP.exe'
 $output = Join-Path $OutputDirectory "Agent-Beacon-$version.exe"
 $setup = Join-Path $OutputDirectory "Agent-Beacon-Setup-$version.exe"
-$sources = @('AppInfo.cs','PixelTheme.cs','DpiSupport.cs','StateHistory.cs','UsageStatistics.cs','DesktopFeatures.cs','UpdateService.cs','AgentUi.cs','Integrations.cs','CodexEventCompatibility.cs','AgentTrafficLight.cs') | ForEach-Object { Join-Path $PSScriptRoot $_ }
+$sources = @('AppInfo.cs','PixelTheme.cs','DpiSupport.cs','StateHistory.cs','UsageStatistics.cs','DesktopFeatures.cs','TaskCenter.cs','UpdateService.cs','AgentUi.cs','Integrations.cs','CodexEventCompatibility.cs','AgentTrafficLight.cs') | ForEach-Object { Join-Path $PSScriptRoot $_ }
 New-Item -ItemType Directory -Force -Path $OutputDirectory, (Split-Path $helper) | Out-Null
 
 $deterministic = @('/deterministic+',("/pathmap:" + $PSScriptRoot + '=/_/AgentBeacon'))

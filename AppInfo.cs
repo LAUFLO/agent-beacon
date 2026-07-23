@@ -5,13 +5,13 @@ using System.Reflection;
 [assembly: AssemblyCompany("LAUFLO")]
 [assembly: AssemblyProduct("Agent Beacon")]
 [assembly: AssemblyCopyright("Copyright © LAUFLO 2026")]
-[assembly: AssemblyVersion("1.5.0.0")]
-[assembly: AssemblyFileVersion("1.5.0.0")]
-[assembly: AssemblyInformationalVersion("1.5.0")]
+[assembly: AssemblyVersion("1.6.0.0")]
+[assembly: AssemblyFileVersion("1.6.0.0")]
+[assembly: AssemblyInformationalVersion("1.6.0")]
 
 namespace AgentTrafficLightNative {
   static class AppInfo {
-    public const string Version = "1.5.0";
+    public const string Version = "1.6.0";
     public const string Repository = "LAUFLO/agent-beacon";
     public const string ReleaseApi = "https://api.github.com/repos/LAUFLO/agent-beacon/releases/latest";
   }

@@ -24,8 +24,10 @@ namespace AgentTrafficLightNative {
 
   sealed class AgentTask {
     public string Id, Source, SessionId, Title, Status, Detail, Evidence, InteractionId;
-    public long StartedAt, UpdatedAt;
-    public bool ExplicitStart, ReliableStart, PendingExec;
+    public string Cwd, Phase, HealthState, HealthDetail;
+    public long StartedAt, UpdatedAt, LastActivityAt;
+    public int Progress = -1;
+    public bool ExplicitStart, ReliableStart, PendingExec, Restored, Stalled;
   }
 
   sealed class AgentRuntimeSnapshot {
@@ -51,7 +53,8 @@ namespace AgentTrafficLightNative {
   }
 
   sealed class CodexStreamState {
-    public long Offset, Size, Ticks; public string Remainder = "", Current, Session;
+    public long Offset, Size, Ticks; public string Remainder = "", Current, Session, Cwd;
+    public bool AfterTerminal;
     public readonly Dictionary<string, AgentTask> Turns = new Dictionary<string, AgentTask>();
     public readonly HashSet<string> PendingAttentionCalls = new HashSet<string>(StringComparer.Ordinal);
     public readonly HashSet<string> PendingExecCalls = new HashSet<string>(StringComparer.Ordinal);
@@ -227,7 +230,7 @@ namespace AgentTrafficLightNative {
         bool reset = state.Ticks == 0 || info.Length < state.Offset || info.Length - state.Offset > 4 * 1024 * 1024;
         long start = reset ? Math.Max(0, info.Length - 512 * 1024) : state.Offset;
         if (reset) {
-          state.Offset = start; state.Remainder = ""; state.Current = null; state.Session = Path.GetFileNameWithoutExtension(file); state.Turns.Clear(); state.PendingAttentionCalls.Clear(); state.PendingExecCalls.Clear();
+          state.Offset = start; state.Remainder = ""; state.Current = null; state.Session = Path.GetFileNameWithoutExtension(file); state.AfterTerminal = false; state.Turns.Clear(); state.PendingAttentionCalls.Clear(); state.PendingExecCalls.Clear();
         }
         string appended = ""; long end;
         using (var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) {
@@ -271,27 +274,37 @@ namespace AgentTrafficLightNative {
     void ParseCodexLine(CodexStreamState state, string line, long mtime) {
       IDictionary<string, object> row; try { row = Util.Json.DeserializeObject(line) as IDictionary<string, object>; } catch { return; } if (row == null) return;
       var payload = Util.D(row, "payload"); string type = Util.S(row, "type", ""); long at = Util.At(Util.S(row, "timestamp", ""), mtime);
-      if (type == "session_meta") { state.Session = Util.S(payload, "session_id", Util.S(payload, "id", state.Session)); return; }
+      if (type == "session_meta") { state.Session = Util.S(payload, "session_id", Util.S(payload, "id", state.Session)); state.Cwd = Util.S(payload, "cwd", state.Cwd); return; }
+      if (type == "turn_context") { state.Cwd = Util.S(payload, "cwd", state.Cwd); return; }
       string ptype = Util.S(payload, "type", "");
       if (type == "event_msg" && ptype == "task_started") {
+        state.AfterTerminal = false;
         state.PendingAttentionCalls.Clear(); state.PendingExecCalls.Clear();
         state.Current = Util.S(payload, "turn_id", Guid.NewGuid().ToString("N"));
-        state.Turns[state.Current] = new AgentTask { Id = "codex:" + state.Session + ":" + state.Current, Source = "Codex", SessionId = state.Session, Title = "Codex 任务", Status = State.Running, Detail = "正在执行", StartedAt = at, UpdatedAt = at }; return;
+        state.Turns[state.Current] = new AgentTask { Id = "codex:" + state.Session + ":" + state.Current, Source = "Codex", SessionId = state.Session, Title = "Codex 任务", Status = State.Running, Detail = "正在执行", Phase = "开始处理", Cwd = state.Cwd, StartedAt = at, UpdatedAt = at, LastActivityAt = at }; return;
+      }
+      if (state.AfterTerminal) {
+        bool newUserTurn = type == "event_msg" && ptype == "user_message";
+        if (!newUserTurn) return;
+        state.AfterTerminal = false;
       }
       bool activity = type == "response_item" || (type == "event_msg" && Regex.IsMatch(ptype, "user_message|agent_message|token_count|patch_apply|task_complete|turn_aborted", RegexOptions.IgnoreCase));
       if (state.Current == null && activity) {
         state.Current = "tail-latest:" + at;
-        state.Turns[state.Current] = new AgentTask { Id = "codex:" + state.Session + ":" + state.Current, Source = "Codex", SessionId = state.Session, Title = "Codex 任务", Status = State.Running, Detail = "检测到实时活动", StartedAt = at, UpdatedAt = at };
+        state.Turns[state.Current] = new AgentTask { Id = "codex:" + state.Session + ":" + state.Current, Source = "Codex", SessionId = state.Session, Title = "Codex 任务", Status = State.Running, Detail = "检测到实时活动", Phase = "处理中", Cwd = state.Cwd, StartedAt = at, UpdatedAt = at, LastActivityAt = at };
       }
       AgentTask task; if (state.Current == null || !state.Turns.TryGetValue(state.Current, out task)) return;
-      task.UpdatedAt = Math.Max(task.UpdatedAt, at);
+      task.UpdatedAt = Math.Max(task.UpdatedAt, at); task.LastActivityAt = Math.Max(task.LastActivityAt, at); if (String.IsNullOrWhiteSpace(task.Cwd)) task.Cwd = state.Cwd;
       if (type == "event_msg" && ptype == "user_message") task.Title = Util.Clean(Util.S(payload, "message", ""), task.Title);
-      else if (type == "event_msg" && ptype == "task_complete") { task.Status = State.Complete; task.Detail = "任务已结束"; task.PendingExec = false; state.PendingAttentionCalls.Clear(); state.PendingExecCalls.Clear(); state.Current = null; }
-      else if (type == "event_msg" && ptype == "turn_aborted") { task.Status = State.Complete; task.Detail = "任务已中断"; task.PendingExec = false; state.PendingAttentionCalls.Clear(); state.PendingExecCalls.Clear(); state.Current = null; }
+      else if (type == "event_msg" && ptype == "agent_message") task.Phase = "整理结果";
+      else if (type == "event_msg" && ptype == "patch_apply") task.Phase = "应用修改";
+      else if (type == "event_msg" && ptype == "task_complete") { task.Status = State.Complete; task.Detail = "任务已结束"; task.Phase = "已结束"; task.PendingExec = false; state.PendingAttentionCalls.Clear(); state.PendingExecCalls.Clear(); state.Current = null; state.AfterTerminal = true; }
+      else if (type == "event_msg" && ptype == "turn_aborted") { task.Status = State.Complete; task.Detail = "任务已中断"; task.Phase = "已中断"; task.PendingExec = false; state.PendingAttentionCalls.Clear(); state.PendingExecCalls.Clear(); state.Current = null; state.AfterTerminal = true; }
       else if (type == "response_item" && CodexEventCompatibility.IsToolCall(ptype)) {
         string name = Util.S(payload, "name", ""), input = CodexEventCompatibility.Input(payload);
         string callId = CodexEventCompatibility.CallId(payload);
         bool execCall = CodexEventCompatibility.IsExec(name);
+        task.Phase = execCall ? "执行命令" : "调用工具";
         if (execCall) { state.PendingExecCalls.Add(callId); task.PendingExec = true; }
         bool explicitRequest = CodexEventCompatibility.IsExplicitInteraction(name, input)
           || CodexEventCompatibility.IsComputerUseAction(name, input)
@@ -301,10 +314,11 @@ namespace AgentTrafficLightNative {
           RefreshCodexPendingAttention(state);
         }
       } else if (type == "response_item" && CodexEventCompatibility.IsToolOutput(ptype)) {
+        task.Phase = "处理工具结果";
         string callId = CodexEventCompatibility.CallId(payload); if (callId == "*") callId = "";
         state.PendingExecCalls.Remove("*"); if (!String.IsNullOrWhiteSpace(callId)) state.PendingExecCalls.Remove(callId); task.PendingExec = state.PendingExecCalls.Count > 0;
         bool resolved = state.PendingAttentionCalls.Remove("*"); if (!String.IsNullOrWhiteSpace(callId)) resolved = state.PendingAttentionCalls.Remove(callId) || resolved;
-        if (resolved) { if (state.PendingAttentionCalls.Count == 0) task.InteractionId = ""; RefreshCodexPendingAttention(state); if (task.Status == State.Running) task.Detail = "已确认，继续执行"; }
+        if (resolved) { if (state.PendingAttentionCalls.Count == 0) task.InteractionId = ""; RefreshCodexPendingAttention(state); if (task.Status == State.Running) { task.Detail = "已确认，继续执行"; task.Phase = "继续处理"; } }
       }
     }
 
@@ -369,14 +383,14 @@ namespace AgentTrafficLightNative {
         bool toolResult = type == "user" && raw.IndexOf("tool_result", StringComparison.OrdinalIgnoreCase) >= 0;
         bool assistant = type == "assistant";
         if (!userMessage && !toolResult && !assistant) continue;
-        if (task == null) task = new AgentTask { Id = "claude:" + session, Source = "Claude Code", SessionId = session, Title = "Claude Code 任务", Status = State.Running, Detail = "正在执行", StartedAt = at, UpdatedAt = at };
-        task.Id = "claude:" + session; task.SessionId = session; task.UpdatedAt = Math.Max(task.UpdatedAt, at);
+        if (task == null) task = new AgentTask { Id = "claude:" + session, Source = "Claude Code", SessionId = session, Title = "Claude Code 任务", Status = State.Running, Detail = "正在执行", Phase = "处理中", StartedAt = at, UpdatedAt = at, LastActivityAt = at };
+        task.Id = "claude:" + session; task.SessionId = session; task.UpdatedAt = Math.Max(task.UpdatedAt, at); task.LastActivityAt = Math.Max(task.LastActivityAt, at); task.Cwd = Util.S(row, "cwd", task.Cwd);
         bool manual = Regex.IsMatch(raw, "\\\"name\\\"\\s*:\\s*\\\"(?:AskUserQuestion|request_user_input|PermissionRequest)\\\"|approval[_ -]?(?:required|pending)|waiting[_ -]?(?:for[_ -]?)?(?:user|input|approval)", RegexOptions.IgnoreCase);
         bool complete = assistant && Regex.IsMatch(raw, "\\\"stop_reason\\\"\\s*:\\s*\\\"(?:end_turn|stop_sequence)\\\"", RegexOptions.IgnoreCase);
         bool running = userMessage || toolResult || (assistant && Regex.IsMatch(raw, "\\\"type\\\"\\s*:\\s*\\\"tool_use\\\"|\\\"stop_reason\\\"\\s*:\\s*\\\"tool_use\\\"", RegexOptions.IgnoreCase));
-        if (running) { task.Status = State.Running; task.Detail = toolResult ? "工具执行完成，继续处理" : "正在执行"; }
-        if (manual) { task.Status = State.Attention; task.Detail = "等待你的确认或输入"; }
-        if (complete) { task.Status = State.Complete; task.Detail = "任务已完成"; }
+        if (running) { task.Status = State.Running; task.Detail = toolResult ? "工具执行完成，继续处理" : "正在执行"; task.Phase = toolResult ? "处理工具结果" : "处理中"; }
+        if (manual) { task.Status = State.Attention; task.Detail = "等待你的确认或输入"; task.Phase = "等待确认"; }
+        if (complete) { task.Status = State.Complete; task.Detail = "任务已完成"; task.Phase = "已完成"; }
       }
       if (task == null) return new List<AgentTask>(); if (task.Status == State.Running && Util.Now() - task.UpdatedAt > 1800000) { task.Status = State.Complete; task.Detail = "超过 30 分钟无活动，视为空闲"; } return new List<AgentTask> { task };
     }
@@ -403,7 +417,8 @@ namespace AgentTrafficLightNative {
       if ((source == "OpenCode" || source == "TRAE") && (String.Equals(sid, "opencode-session", StringComparison.OrdinalIgnoreCase) || !Regex.IsMatch(sid, "^[a-z0-9][a-z0-9_.:-]{2,127}$", RegexOptions.IgnoreCase))) return result;
       long updated = Util.N(row, "updatedAt", mtime);
       string evidence = source == "TRAE" ? "TRAE 本地 MCP 事件" : source == "OpenCode" ? "OpenCode Plugin 事件" : "Claude Hook 事件";
-      var task = new AgentTask { Id = Util.S(row, "id", source + ":" + sid), Source = source, SessionId = sid, Title = Util.Clean(Util.S(row, "title", ""), source + " 任务"), Status = status, Detail = Util.Clean(Util.S(row, "detail", ""), status == State.Complete ? "任务已完成" : "正在执行"), Evidence = evidence, StartedAt = Util.N(row, "startedAt", updated), UpdatedAt = updated, ExplicitStart = source == "TRAE" || Util.S(row, "explicitStart", "").Equals("True", StringComparison.OrdinalIgnoreCase), ReliableStart = source == "TRAE" || Util.S(row, "reliableStart", "").Equals("True", StringComparison.OrdinalIgnoreCase) };
+      int progress = -1; Int32.TryParse(Util.S(row, "progress", "-1"), out progress); if (progress < 0 || progress > 100) progress = -1;
+      var task = new AgentTask { Id = Util.S(row, "id", source + ":" + sid), Source = source, SessionId = sid, Title = Util.Clean(Util.S(row, "title", ""), source + " 任务"), Status = status, Detail = Util.Clean(Util.S(row, "detail", ""), status == State.Complete ? "任务已完成" : "正在执行"), Evidence = evidence, Cwd = Util.S(row, "cwd", ""), Phase = Util.Clean(Util.S(row, "phase", ""), ""), Progress = progress, StartedAt = Util.N(row, "startedAt", updated), UpdatedAt = updated, LastActivityAt = Util.N(row, "lastActivityAt", updated), ExplicitStart = source == "TRAE" || Util.S(row, "explicitStart", "").Equals("True", StringComparison.OrdinalIgnoreCase), ReliableStart = source == "TRAE" || Util.S(row, "reliableStart", "").Equals("True", StringComparison.OrdinalIgnoreCase) };
       if (source != "TRAE" && task.Status == State.Running && Util.Now() - updated > 1800000) { task.Status = State.Complete; task.Detail = "超过 30 分钟无事件，视为空闲"; }
       result.Add(task); return result;
     }
@@ -547,6 +562,22 @@ namespace AgentTrafficLightNative {
   }
 
   static class AgentStateRules {
+    public static AgentTask SelectCodexUiAttentionTarget(List<AgentTask> sourceTasks) {
+      var running = new List<AgentTask>();
+      foreach (var task in sourceTasks ?? new List<AgentTask>()) {
+        if (task == null || !String.Equals(task.Source, "Codex", StringComparison.OrdinalIgnoreCase) || task.Status == State.Complete) continue;
+        running.Add(task);
+      }
+      if (running.Count == 0) return null;
+      var pendingExec = running.FindAll(delegate(AgentTask task) { return task.PendingExec; });
+      var candidates = pendingExec.Count > 0 ? pendingExec : running;
+      candidates.Sort(delegate(AgentTask left, AgentTask right) {
+        int updated = left.UpdatedAt.CompareTo(right.UpdatedAt); if (updated != 0) return updated;
+        return left.StartedAt.CompareTo(right.StartedAt);
+      });
+      return Clone(candidates[0]);
+    }
+
     public static AgentTask LatestForSource(string source, List<AgentTask> sourceTasks) {
       if (sourceTasks == null || sourceTasks.Count == 0) return null;
       sourceTasks.Sort(delegate(AgentTask a, AgentTask b) { return b.UpdatedAt.CompareTo(a.UpdatedAt); });
@@ -574,8 +605,8 @@ namespace AgentTrafficLightNative {
       if (candidate.Status == State.Running && baseline > 0 && candidate.UpdatedAt < baseline - 5000) return previous != null && (previous.Id ?? "").StartsWith("idle:", StringComparison.OrdinalIgnoreCase) ? Clone(previous) : Idle(source);
       return Clone(candidate);
     }
-    public static AgentTask Idle(string source) { long now = Util.Now(); return new AgentTask { Id = "idle:" + source, Source = source, SessionId = "", Title = source, Status = State.Complete, Detail = "Agent 已启动，等待新任务", Evidence = "进程检测 · 未发现本次启动后的任务事件", StartedAt = now, UpdatedAt = now }; }
-    public static AgentTask Clone(AgentTask task) { return task == null ? null : new AgentTask { Id = task.Id, Source = task.Source, SessionId = task.SessionId, Title = task.Title, Status = task.Status, Detail = task.Detail, Evidence = task.Evidence, InteractionId = task.InteractionId, StartedAt = task.StartedAt, UpdatedAt = task.UpdatedAt, ExplicitStart = task.ExplicitStart, ReliableStart = task.ReliableStart, PendingExec = task.PendingExec }; }
+    public static AgentTask Idle(string source) { long now = Util.Now(); return new AgentTask { Id = "idle:" + source, Source = source, SessionId = "", Title = source, Status = State.Complete, Detail = "Agent 已启动，等待新任务", Phase = "等待任务", Evidence = "进程检测 · 未发现本次启动后的任务事件", StartedAt = now, UpdatedAt = now, LastActivityAt = now }; }
+    public static AgentTask Clone(AgentTask task) { return task == null ? null : new AgentTask { Id = task.Id, Source = task.Source, SessionId = task.SessionId, Title = task.Title, Status = task.Status, Detail = task.Detail, Evidence = task.Evidence, InteractionId = task.InteractionId, Cwd = task.Cwd, Phase = task.Phase, HealthState = task.HealthState, HealthDetail = task.HealthDetail, StartedAt = task.StartedAt, UpdatedAt = task.UpdatedAt, LastActivityAt = task.LastActivityAt, Progress = task.Progress, ExplicitStart = task.ExplicitStart, ReliableStart = task.ReliableStart, PendingExec = task.PendingExec, Restored = task.Restored, Stalled = task.Stalled }; }
   }
 
 
@@ -612,9 +643,26 @@ namespace AgentTrafficLightNative {
 
     [STAThread] public static void Main(string[] args) {
       DpiSupport.Enable(); Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
-      if (Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") == "1" && Array.IndexOf(args, "--progress-preview") >= 0) { using (var preview = new PixelProgressForm("自动更新 v1.5.0", true)) { preview.Shown += delegate { preview.Report(64, "正在下载…"); }; Application.Run(preview); } return; }
-      if (Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") == "1" && Array.IndexOf(args, "--update-confirm-preview") >= 0) { PixelDialog.Show(null, "发现 v1.5.0，是否立即更新？", "发现新版本", PixelDialogButtons.YesNo); return; }
-      if (Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") == "1" && Array.IndexOf(args, "--history-preview") >= 0) { using (var preview = new HistoryForm()) Application.Run(preview); return; }
+      if (Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") == "1" && Array.IndexOf(args, "--progress-preview") >= 0) { using (var preview = new PixelProgressForm("自动更新 v" + AppInfo.Version, true)) { preview.Shown += delegate { preview.Report(64, "正在下载…"); }; Application.Run(preview); } return; }
+      if (Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") == "1" && Array.IndexOf(args, "--update-confirm-preview") >= 0) { PixelDialog.Show(null, "发现 v" + AppInfo.Version + "，是否立即更新？", "发现新版本", PixelDialogButtons.YesNo); return; }
+      if (Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") == "1" && Array.IndexOf(args, "--history-preview") >= 0) {
+        long now = Util.Now(); var tasks = new List<AgentTask> {
+          new AgentTask { Id = "preview:codex:wait", Source = "Codex", SessionId = "codex-wait", Status = State.Attention, Detail = "等待命令确认", Phase = "等待确认", Cwd = @"D:\agent-beacon", StartedAt = now - 392000, UpdatedAt = now - 1000, LastActivityAt = now - 1000 },
+          new AgentTask { Id = "preview:codex:run", Source = "Codex", SessionId = "codex-run", Status = State.Running, Detail = "正在测试", Phase = "正在测试", Cwd = @"D:\api-service", StartedAt = now - 291000, UpdatedAt = now, LastActivityAt = now },
+          new AgentTask { Id = "preview:trae:run", Source = "TRAE", SessionId = "trae-run", Status = State.Running, Detail = "正在执行", Phase = "正在执行", Cwd = @"D:\client-desktop", StartedAt = now - 724000, UpdatedAt = now, LastActivityAt = now },
+          new AgentTask { Id = "preview:open:run", Source = "OpenCode", SessionId = "open-run", Status = State.Running, Detail = "正在分析", Phase = "正在分析", Cwd = @"D:\docs", StartedAt = now - 135000, UpdatedAt = now, LastActivityAt = now }
+        };
+        var health = new List<TaskSourceHealth> { new TaskSourceHealth { Source = "Codex", State = "attention", Detail = "事件源正常，任务正在等待处理", Trusted = true, LastEventAt = now }, new TaskSourceHealth { Source = "TRAE", State = "healthy", Detail = "事件源正常", Trusted = true, LastEventAt = now }, new TaskSourceHealth { Source = "Claude Code", State = "idle", Detail = "最近无任务事件", Trusted = true, LastEventAt = now }, new TaskSourceHealth { Source = "OpenCode", State = "healthy", Detail = "事件源正常", Trusted = true, LastEventAt = now } };
+        TaskCenterState.Update(tasks, health); using (var preview = new HistoryForm()) Application.Run(preview); return;
+      }
+      if (Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") == "1" && Array.IndexOf(args, "--task-center-preview") >= 0) {
+        long now = Util.Now(); var tasks = new List<AgentTask> {
+          new AgentTask { Id = "preview:wait", Source = "Codex", SessionId = "codex1234", Status = State.Attention, Detail = "等待你的确认", Phase = "等待确认", Cwd = @"D:\agent-beacon", StartedAt = now - 360000, UpdatedAt = now - 360000, LastActivityAt = now - 360000 },
+          new AgentTask { Id = "preview:run", Source = "OpenCode", SessionId = "open5678", Status = State.Running, Detail = "正在执行", Phase = "执行测试", Progress = 42, Cwd = @"D:\web-portal", StartedAt = now - 180000, UpdatedAt = now, LastActivityAt = now }
+        };
+        var health = new List<TaskSourceHealth> { new TaskSourceHealth { Source = "Codex", State = "attention", Detail = "事件源正常，任务正在等待处理", Trusted = true, LastEventAt = now }, new TaskSourceHealth { Source = "OpenCode", State = "healthy", Detail = "事件源正常", Trusted = true, LastEventAt = now } };
+        using (var preview = new TaskQueuePopup(delegate(AgentTask task) { }, delegate { })) { preview.StartPosition = FormStartPosition.CenterScreen; preview.ShowInTaskbar = true; preview.AutoCloseOnDeactivate = false; preview.UpdateData(tasks, health); Application.Run(preview); } return;
+      }
       if (UpdateService.TryApplyFromArguments(args)) return;
       if (Array.IndexOf(args, "--exit") >= 0) { try { EventWaitHandle.OpenExisting(ExitEventName).Set(); } catch { } return; }
       StopPreviousVersions();

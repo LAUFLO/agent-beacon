@@ -58,14 +58,32 @@ namespace AgentTrafficLightNative {
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window, int command);
 
     public static bool Focus(string source) {
-      IntPtr match = IntPtr.Zero; EnumWindows(delegate(IntPtr window, IntPtr unused) {
+      return Focus(new AgentTask { Source = source });
+    }
+
+    public static bool Focus(AgentTask task) {
+      string source = task == null ? "" : task.Source; IntPtr match = IntPtr.Zero; int bestScore = -1;
+      string project = ProjectName(task), taskTitle = task == null ? "" : (task.Title ?? ""), session = task == null ? "" : (task.SessionId ?? "");
+      if (session.Length > 8) session = session.Substring(session.Length - 8);
+      EnumWindows(delegate(IntPtr window, IntPtr unused) {
         if (!IsWindowVisible(window) || GetWindowTextLength(window) == 0) return true;
         uint pid; GetWindowThreadProcessId(window, out pid); string process = "", title = "";
-        try { process = Process.GetProcessById((int)pid).ProcessName; } catch { return true; }
+        try { using (var owner = Process.GetProcessById((int)pid)) process = owner.ProcessName; } catch { return true; }
         var text = new StringBuilder(GetWindowTextLength(window) + 1); GetWindowText(window, text, text.Capacity); title = text.ToString();
-        if (Matches(source, process, title)) { match = window; return false; } return true;
+        if (!Matches(source, process, title)) return true;
+        int score = 10;
+        if (!String.IsNullOrWhiteSpace(project) && Contains(title, project)) score += 8;
+        if (!String.IsNullOrWhiteSpace(session) && Contains(title, session)) score += 6;
+        if (!String.IsNullOrWhiteSpace(taskTitle) && taskTitle.Length >= 4 && Contains(title, taskTitle.Length > 32 ? taskTitle.Substring(0, 32) : taskTitle)) score += 4;
+        if (score > bestScore) { bestScore = score; match = window; }
+        return true;
       }, IntPtr.Zero);
       if (match == IntPtr.Zero) return false; ShowWindow(match, 9); return SetForegroundWindow(match);
+    }
+
+    static string ProjectName(AgentTask task) {
+      if (task == null || String.IsNullOrWhiteSpace(task.Cwd)) return "";
+      try { return System.IO.Path.GetFileName(task.Cwd.TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar)); } catch { return ""; }
     }
 
     static bool Matches(string source, string process, string title) {

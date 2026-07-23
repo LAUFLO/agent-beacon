@@ -65,9 +65,10 @@ namespace AgentTrafficLightNative {
         EnsureLoaded(now); var active = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var task in agents ?? new List<AgentTask>()) {
           if (task == null || String.IsNullOrWhiteSpace(task.Source)) continue;
-          active.Add(task.Source); UsageTracker tracker;
-          if (!Trackers.TryGetValue(task.Source, out tracker)) {
-            Trackers[task.Source] = new UsageTracker { TaskId = task.Id ?? "", Status = task.Status ?? "", UpdatedAt = now }; continue;
+          string trackerKey = String.IsNullOrWhiteSpace(task.Id) ? task.Source : task.Source + "|" + task.Id;
+          active.Add(trackerKey); UsageTracker tracker;
+          if (!Trackers.TryGetValue(trackerKey, out tracker)) {
+            Trackers[trackerKey] = new UsageTracker { TaskId = task.Id ?? "", Status = task.Status ?? "", UpdatedAt = now }; continue;
           }
           Accrue(tracker, now);
           bool completed = task.Status == State.Complete && tracker.Status != State.Complete && !(task.Id ?? "").StartsWith("idle:", StringComparison.OrdinalIgnoreCase);
@@ -76,7 +77,7 @@ namespace AgentTrafficLightNative {
           }
           tracker.TaskId = task.Id ?? ""; tracker.Status = task.Status ?? ""; tracker.UpdatedAt = now;
         }
-        foreach (string source in new List<string>(Trackers.Keys)) if (!active.Contains(source)) { Accrue(Trackers[source], now); Trackers.Remove(source); }
+        foreach (string key in new List<string>(Trackers.Keys)) if (!active.Contains(key)) { Accrue(Trackers[key], now); Trackers.Remove(key); }
         if (lastPersistAt == 0 || now - lastPersistAt >= 30000) Persist(now);
       }
     }

@@ -14,13 +14,13 @@ namespace AgentTrafficLightNative {
     readonly List<AgentTask> agents = new List<AgentTask>();
     readonly System.Windows.Forms.Timer blinkTimer = new System.Windows.Forms.Timer(); bool blinkOn = true; float scaleFactor = 1f;
     public float ScaleFactor { get { return scaleFactor; } set { scaleFactor = Math.Max(1f, Math.Min(2f, value)); Invalidate(); } }
-    public Rectangle SettingsRect, CloseRect;
-    public event EventHandler SettingsClicked, CloseClicked;
+    public Rectangle CenterRect, SettingsRect, CloseRect;
+    public event EventHandler CenterClicked, SettingsClicked, CloseClicked;
     public event Action<string> AgentActivated;
     public PixelPoleControl() { Dock = DockStyle.Fill; BackColor = KeyColor; SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true); blinkTimer.Interval = 500; blinkTimer.Tick += delegate { blinkOn = !blinkOn; Invalidate(); }; }
     public void SetAgents(List<AgentTask> value) { agents.Clear(); agents.AddRange(value); bool attention = agents.Exists(delegate(AgentTask task) { return task.Status == State.Attention; }); if (attention) blinkTimer.Start(); else { blinkTimer.Stop(); blinkOn = true; } Invalidate(); }
     Point ToLogical(Point point) { return new Point((int)Math.Round(point.X * 4f / scaleFactor), (int)Math.Round(point.Y * 4f / scaleFactor)); }
-    public bool IsButton(Point point) { Point logical = ToLogical(point); return SettingsRect.Contains(logical) || CloseRect.Contains(logical); }
+    public bool IsButton(Point point) { Point logical = ToLogical(point); return CenterRect.Contains(logical) || SettingsRect.Contains(logical) || CloseRect.Contains(logical); }
     public string AgentAt(Point point) {
       if (agents.Count == 0) return null; Point logical = ToLogical(point); if (logical.Y < 8 || logical.Y > 130) return null;
       int count = Math.Min(4, agents.Count), center = (int)Math.Round(Width * 2f / scaleFactor), best = Int32.MaxValue, index = -1; int[] xs = HeadCenters(count, center);
@@ -28,12 +28,12 @@ namespace AgentTrafficLightNative {
       return index >= 0 && best <= 32 ? agents[index].Source : null;
     }
     protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); Cursor = IsButton(e.Location) || AgentAt(e.Location) != null ? Cursors.Hand : Cursors.SizeAll; }
-    protected override void OnMouseClick(MouseEventArgs e) { base.OnMouseClick(e); Point logical = ToLogical(e.Location); if (SettingsRect.Contains(logical) && SettingsClicked != null) SettingsClicked(this, EventArgs.Empty); else if (CloseRect.Contains(logical) && CloseClicked != null) CloseClicked(this, EventArgs.Empty); else { string source = AgentAt(e.Location); if (source != null && AgentActivated != null) AgentActivated(source); } }
+    protected override void OnMouseClick(MouseEventArgs e) { base.OnMouseClick(e); Point logical = ToLogical(e.Location); if (CenterRect.Contains(logical) && CenterClicked != null) CenterClicked(this, EventArgs.Empty); else if (SettingsRect.Contains(logical) && SettingsClicked != null) SettingsClicked(this, EventArgs.Empty); else if (CloseRect.Contains(logical) && CloseClicked != null) CloseClicked(this, EventArgs.Empty); else { string source = AgentAt(e.Location); if (source != null && AgentActivated != null) AgentActivated(source); } }
     protected override void OnPaint(PaintEventArgs e) {
       var g = e.Graphics; g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None; g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half; g.Clear(KeyColor); g.ScaleTransform(0.25f * scaleFactor, 0.25f * scaleFactor);
       int center = (int)Math.Round(Width * 2f / scaleFactor), headY = 8, barY = 168, baseY = (int)Math.Round(Height * 4f / scaleFactor) - 18;
       if (agents.Count == 0) {
-        DrawPole(g, new Point(center, 70), new Point(center, baseY)); DrawLoginDisplay(g, center, headY); DrawBase(g, center, baseY); DrawControls(g, center, baseY - 92); return;
+        DrawPole(g, new Point(center, 70), new Point(center, baseY)); DrawLoginDisplay(g, center, headY); DrawBase(g, center, baseY); DrawControls(g, center, baseY - 106); return;
       }
       int count = Math.Min(4, agents.Count);
       int[] xs = HeadCenters(count, center);
@@ -43,8 +43,8 @@ namespace AgentTrafficLightNative {
         for (int i = 0; i < count; i++) DrawPole(g, new Point(xs[i], headY + 122), new Point(xs[i], barY));
         DrawPole(g, new Point(center, barY), new Point(center, baseY));
       }
-      for (int i = 0; i < count; i++) DrawHead(g, xs[i] - 27, headY, agents[i].Status);
-      DrawBase(g, center, baseY); DrawControls(g, center, baseY - 92);
+      for (int i = 0; i < count; i++) DrawHead(g, xs[i] - 27, headY, agents[i]);
+      DrawBase(g, center, baseY); DrawControls(g, center, baseY - 106);
     }
     int[] HeadCenters(int count, int center) {
       if (count == 1) return new[] { center };
@@ -60,7 +60,8 @@ namespace AgentTrafficLightNative {
         else g.DrawLine(shine, from.X - 3, from.Y, to.X - 3, to.Y);
       }
     }
-    void DrawHead(Graphics g, int x, int y, string status) {
+    void DrawHead(Graphics g, int x, int y, AgentTask task) {
+      string status = task == null ? State.Complete : task.Status;
       Point[] body = { new Point(x + 7, y), new Point(x + 47, y), new Point(x + 54, y + 7), new Point(x + 54, y + 115), new Point(x + 47, y + 122), new Point(x + 7, y + 122), new Point(x, y + 115), new Point(x, y + 7) };
       using (var edge = new SolidBrush(Color.FromArgb(7, 10, 16))) g.FillPolygon(edge, body);
       Point[] inner = { new Point(x + 9, y + 5), new Point(x + 45, y + 5), new Point(x + 49, y + 9), new Point(x + 49, y + 113), new Point(x + 44, y + 117), new Point(x + 10, y + 117), new Point(x + 5, y + 112), new Point(x + 5, y + 10) };
@@ -69,6 +70,10 @@ namespace AgentTrafficLightNative {
       DrawLamp(g, x + 14, y + 12, Color.FromArgb(255, 48, 60), status == State.Complete);
       DrawLamp(g, x + 14, y + 46, Color.FromArgb(255, 205, 32), status == State.Attention && blinkOn);
       DrawLamp(g, x + 14, y + 80, Color.FromArgb(38, 231, 103), status == State.Running);
+      if (task != null && (task.HealthState == "disconnected" || task.HealthState == "unconfigured" || task.HealthState == "stale")) {
+        using (var edge = new SolidBrush(Color.FromArgb(5, 7, 11))) g.FillRectangle(edge, x + 40, y + 103, 12, 12);
+        using (var mark = new SolidBrush(Color.FromArgb(145, 156, 171))) { g.FillRectangle(mark, x + 43, y + 106, 6, 2); g.FillRectangle(mark, x + 45, y + 108, 2, 4); }
+      }
     }
     void DrawLamp(Graphics g, int x, int y, Color color, bool active) {
       Point[] lens = { new Point(x + 8, y), new Point(x + 20, y), new Point(x + 28, y + 8), new Point(x + 28, y + 20), new Point(x + 20, y + 28), new Point(x + 8, y + 28), new Point(x, y + 20), new Point(x, y + 8) };
@@ -79,12 +84,20 @@ namespace AgentTrafficLightNative {
       if (active) { using (var shine = new SolidBrush(Color.White)) g.FillRectangle(shine, x + 8, y + 7, 5, 5); using (var glow = new Pen(Color.FromArgb(185, color), 2)) g.DrawPolygon(glow, face); }
     }
     void DrawControls(Graphics g, int center, int y) {
-      SettingsRect = new Rectangle(center - 18, y, 36, 34); CloseRect = new Rectangle(center - 18, y + 38, 36, 34);
-      DrawButton(g, SettingsRect, false); DrawButton(g, CloseRect, true);
-      int cx = SettingsRect.Left + 18, cy = SettingsRect.Top + 17;
-      using (var gear = new SolidBrush(Color.FromArgb(184, 194, 207))) { g.FillRectangle(gear, cx - 3, cy - 11, 6, 22); g.FillRectangle(gear, cx - 11, cy - 3, 22, 6); g.FillRectangle(gear, cx - 8, cy - 8, 16, 16); }
-      using (var hole = new SolidBrush(Color.FromArgb(38, 46, 57))) g.FillRectangle(hole, cx - 3, cy - 3, 6, 6);
-      using (var cross = new Pen(Color.FromArgb(255, 82, 82), 4)) { g.DrawLine(cross, CloseRect.Left + 10, CloseRect.Top + 9, CloseRect.Right - 10, CloseRect.Bottom - 9); g.DrawLine(cross, CloseRect.Right - 10, CloseRect.Top + 9, CloseRect.Left + 10, CloseRect.Bottom - 9); }
+      CenterRect = new Rectangle(center - 16, y, 32, 26); SettingsRect = new Rectangle(center - 16, y + 36, 32, 26); CloseRect = new Rectangle(center - 16, y + 72, 32, 26);
+      DrawButton(g, CenterRect, false); DrawButton(g, SettingsRect, false); DrawButton(g, CloseRect, true);
+      int cx = CenterRect.Left + 16, cy = CenterRect.Top + 13;
+      using (var list = new SolidBrush(Color.FromArgb(184, 194, 207))) {
+        g.FillRectangle(list, cx - 8, cy - 7, 4, 4); g.FillRectangle(list, cx - 1, cy - 7, 10, 4);
+        g.FillRectangle(list, cx - 8, cy - 1, 4, 4); g.FillRectangle(list, cx - 1, cy - 1, 10, 4);
+        g.FillRectangle(list, cx - 8, cy + 5, 4, 4); g.FillRectangle(list, cx - 1, cy + 5, 10, 4);
+      }
+      int sx = SettingsRect.Left + 16, sy = SettingsRect.Top + 13;
+      using (var gear = new SolidBrush(Color.FromArgb(184, 194, 207))) {
+        g.FillRectangle(gear, sx - 7, sy - 7, 14, 14); g.FillRectangle(gear, sx - 10, sy - 3, 20, 6); g.FillRectangle(gear, sx - 3, sy - 10, 6, 20);
+      }
+      using (var cutout = new SolidBrush(Color.FromArgb(45, 54, 66))) g.FillRectangle(cutout, sx - 3, sy - 3, 6, 6);
+      using (var cross = new Pen(Color.FromArgb(255, 82, 82), 4)) { g.DrawLine(cross, CloseRect.Left + 9, CloseRect.Top + 7, CloseRect.Right - 9, CloseRect.Bottom - 7); g.DrawLine(cross, CloseRect.Right - 9, CloseRect.Top + 7, CloseRect.Left + 9, CloseRect.Bottom - 7); }
     }
     void DrawButton(Graphics g, Rectangle rect, bool close) { using (var border = new SolidBrush(Color.FromArgb(7, 10, 16))) g.FillRectangle(border, rect); using (var fill = new SolidBrush(Color.FromArgb(45, 54, 66))) g.FillRectangle(fill, rect.Left + 4, rect.Top + 4, rect.Width - 8, rect.Height - 8); using (var top = new SolidBrush(Color.FromArgb(82, 94, 111))) g.FillRectangle(top, rect.Left + 6, rect.Top + 6, rect.Width - 12, 3); }
     void DrawBase(Graphics g, int center, int y) { using (var dark = new SolidBrush(Color.FromArgb(7, 10, 16))) g.FillRectangle(dark, center - 43, y - 2, 86, 16); using (var fill = new SolidBrush(Color.FromArgb(45, 54, 66))) g.FillRectangle(fill, center - 36, y + 2, 72, 8); using (var shine = new SolidBrush(Color.FromArgb(80, 92, 108))) g.FillRectangle(shine, center - 30, y + 2, 60, 3); }
@@ -115,7 +128,7 @@ namespace AgentTrafficLightNative {
   sealed class SettingsForm : Form {
     bool dragging; Point dragOrigin;
     public SettingsForm(SettingsData settings, Action<int> intervalChanged, Action<bool> modeChanged, Action<int> scaleChanged, Action updateCheck) {
-      Text = "Agent Beacon 设置"; Icon = PixelTheme.AppIcon; ClientSize = new Size(760, 500); FormBorderStyle = FormBorderStyle.None; MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") == "1"; StartPosition = FormStartPosition.CenterParent; BackColor = PixelTheme.Paper; ForeColor = PixelTheme.Ink; Font = PixelTheme.TextFont; AutoScaleMode = AutoScaleMode.Dpi; DoubleBuffered = true;
+      Text = "Agent Beacon 设置"; Icon = PixelTheme.AppIcon; ClientSize = new Size(760, 438); FormBorderStyle = FormBorderStyle.None; MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") == "1"; StartPosition = FormStartPosition.CenterParent; BackColor = PixelTheme.Paper; ForeColor = PixelTheme.Ink; Font = PixelTheme.TextFont; AutoScaleMode = AutoScaleMode.Dpi; DoubleBuffered = true;
       var title = new Label { Text = "AGENT BEACON v" + AppInfo.Version + " // 设置", AutoSize = false, Location = new Point(60, 8), Size = new Size(610, 32), ForeColor = PixelTheme.Ink, BackColor = Color.Transparent, Font = PixelTheme.TitleFont, TextAlign = ContentAlignment.MiddleCenter }; Controls.Add(title);
       var close = new PixelButton { Text = "X", Location = new Point(719, 9), Size = new Size(28, 27), Danger = true }; close.Click += delegate { Close(); }; Controls.Add(close);
       var auto = new PixelToggle { Text = "开机自启动", Checked = settings.AutoStart, Location = new Point(22, 57), Width = 380 }; auto.CheckedChanged += delegate { settings.AutoStart = auto.Checked; Program.SetAutoStart(auto.Checked); Program.SaveSettings(settings); }; Controls.Add(auto);
@@ -145,7 +158,6 @@ namespace AgentTrafficLightNative {
       Controls.Add(new Label { Text = "完成 " + stats.CompletedTasks, AutoSize = false, Location = new Point(106, 398), Size = new Size(92, 22), TextAlign = ContentAlignment.MiddleCenter, ForeColor = PixelTheme.Red, BackColor = Color.Transparent, Font = PixelTheme.StrongFont });
       Controls.Add(new Label { Text = "运行 " + UsageStatistics.Duration(stats.RunningMs), AutoSize = false, Location = new Point(198, 398), Size = new Size(104, 22), TextAlign = ContentAlignment.MiddleCenter, ForeColor = PixelTheme.Green, BackColor = Color.Transparent, Font = PixelTheme.StrongFont });
       Controls.Add(new Label { Text = "等待 " + UsageStatistics.Duration(stats.AttentionMs), AutoSize = false, Location = new Point(302, 398), Size = new Size(104, 22), TextAlign = ContentAlignment.MiddleCenter, ForeColor = PixelTheme.Yellow, BackColor = Color.Transparent, Font = PixelTheme.StrongFont });
-      Controls.Add(new Label { Text = "仅统计状态时长与完成数量，不保存聊天正文", AutoSize = false, Location = new Point(24, 444), Size = new Size(382, 26), TextAlign = ContentAlignment.MiddleCenter, ForeColor = PixelTheme.Muted, BackColor = Color.Transparent, Font = PixelTheme.TextFont });
       Controls.Add(new Label { Text = "更新与提醒", AutoSize = false, Location = new Point(454, 57), Size = new Size(238, 24), TextAlign = ContentAlignment.MiddleCenter, ForeColor = PixelTheme.Muted, BackColor = Color.Transparent, Font = PixelTheme.StrongFont });
       var autoUpdate = new PixelToggle { Text = "启动时自动检查更新", Checked = settings.AutoCheckUpdates, Location = new Point(454, 88), Width = 280 }; autoUpdate.CheckedChanged += delegate { settings.AutoCheckUpdates = autoUpdate.Checked; Program.SaveSettings(settings); }; Controls.Add(autoUpdate);
       var checkUpdate = new PixelButton { Text = "立即检查 GitHub 更新", Location = new Point(454, 124), Size = new Size(238, 36) }; checkUpdate.Click += delegate { updateCheck(); }; Controls.Add(checkUpdate);
@@ -170,7 +182,7 @@ namespace AgentTrafficLightNative {
     protected override void OnPaint(PaintEventArgs e) {
       Graphics g = e.Graphics; PixelTheme.PaintWindow(g, Width, Height, 430);
       using (var rule = new SolidBrush(PixelTheme.Ink)) { g.FillRectangle(rule, 14, 112, 402, 3); g.FillRectangle(rule, 14, 166, 402, 3); g.FillRectangle(rule, 14, 217, 402, 3); g.FillRectangle(rule, 14, 342, 402, 3); }
-      using (var frame = new Pen(PixelTheme.Ink, 3)) g.DrawRectangle(frame, 14, 390, 402, 94);
+      using (var frame = new Pen(PixelTheme.Ink, 3)) g.DrawRectangle(frame, 14, 390, 402, 34);
       base.OnPaint(e);
     }
   }
@@ -208,7 +220,7 @@ namespace AgentTrafficLightNative {
     readonly System.Windows.Forms.Timer taskbarBlinkTimer = new System.Windows.Forms.Timer(), eventDebounceTimer = new System.Windows.Forms.Timer(); readonly Dictionary<string, NotifyIcon> taskbarLights = new Dictionary<string, NotifyIcon>(); readonly NotifyIcon taskbarLogin = new NotifyIcon(); readonly ContextMenuStrip trayMenu = new ContextMenuStrip(), taskbarMenu = new ContextMenuStrip();
     readonly Dictionary<string, Icon> iconCache = new Dictionary<string, Icon>(); readonly Dictionary<string, long> sourceSeenAt = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase); readonly Dictionary<string, AgentTask> resolvedStates = new Dictionary<string, AgentTask>(StringComparer.OrdinalIgnoreCase); readonly Dictionary<string, string> transitionStates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, long> pendingAttentionNotifications = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase); readonly HashSet<string> sentAttentionNotifications = new HashSet<string>(StringComparer.OrdinalIgnoreCase), sentLongRunningNotifications = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-    long lastScanStartedAt; MonitorWatchers watchers; List<AgentTask> currentAgents = new List<AgentTask>(), lastGoodTasks = new List<AgentTask>(); bool quitting, dragging, scanning, pendingRescan, taskbarBlinkOn = true, transitionBaselineReady, updateChecking, startupUpdateChecked; Point dragOrigin; string lastSignature = null, taskbarLayoutSignature = null;
+    long lastScanStartedAt; MonitorWatchers watchers; List<AgentTask> currentAgents = new List<AgentTask>(), currentTasks = new List<AgentTask>(), lastGoodTasks = new List<AgentTask>(); List<TaskSourceHealth> currentHealth = new List<TaskSourceHealth>(); TaskQueuePopup queuePopup; bool quitting, dragging, scanning, pendingRescan, taskbarBlinkOn = true, transitionBaselineReady, updateChecking, startupUpdateChecked; Point dragOrigin; string lastSignature = null, taskbarLayoutSignature = null;
     [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr handle);
 
     public MainForm(SettingsData loaded) {
@@ -221,6 +233,7 @@ namespace AgentTrafficLightNative {
     }
     void BuildUi() {
       Controls.Add(widget); widget.ScaleFactor = settings.LampScale / 100f; widget.SetAgents(new List<AgentTask>());
+      widget.CenterClicked += delegate { ShowFullStatusCenter(); };
       widget.SettingsClicked += delegate { ShowSettings(); };
       widget.CloseClicked += delegate { Hide(); };
       widget.AgentActivated += delegate(string source) { AgentWindowActivator.Focus(source); };
@@ -228,14 +241,21 @@ namespace AgentTrafficLightNative {
       widget.MouseMove += delegate(object s, MouseEventArgs e) { if (dragging) Location = new Point(Left + e.X - dragOrigin.X, Top + e.Y - dragOrigin.Y); };
       widget.MouseUp += delegate { dragging = false; };
     }
+    void ToggleTaskCenter() {
+      if (queuePopup != null && !queuePopup.IsDisposed) { queuePopup.Close(); queuePopup = null; return; }
+      queuePopup = new TaskQueuePopup(delegate(AgentTask task) { AgentWindowActivator.Focus(task); }, delegate { ShowFullStatusCenter(); });
+      queuePopup.FormClosed += delegate { queuePopup = null; };
+      queuePopup.UpdateData(currentTasks, currentHealth); queuePopup.ShowNear(Bounds);
+    }
+    void ShowFullStatusCenter() { using (var form = new HistoryForm()) { if (settings.TaskbarMode) form.ShowDialog(); else form.ShowDialog(this); } }
     void HandleDisplaySettingsChanged(object sender, EventArgs e) { try { if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(delegate { DpiSupport.KeepOnScreen(this); })); } catch { } }
     void BuildTray() {
       tray.Icon = CachedCircleIcon("idle", Color.FromArgb(100, 116, 139)); tray.Visible = true; tray.Text = "Agent Beacon"; tray.DoubleClick += delegate { Show(); Activate(); };
-      trayMenu.Items.Add("显示红绿灯", null, delegate { Show(); Activate(); }); trayMenu.Items.Add("立即刷新", null, delegate { RefreshTasks(); }); trayMenu.Items.Add("检查更新", null, delegate { BeginUpdateCheck(false); }); trayMenu.Items.Add("状态中心", null, delegate { using (var form = new HistoryForm()) form.ShowDialog(); }); trayMenu.Items.Add("设置", null, delegate { ShowSettings(); }); trayMenu.Items.Add("退出", null, delegate { ExitApplication(); }); PixelTheme.StyleMenu(trayMenu); tray.ContextMenuStrip = trayMenu; ContextMenuStrip = trayMenu; widget.ContextMenuStrip = trayMenu;
+      trayMenu.Items.Add("显示红绿灯", null, delegate { Show(); Activate(); }); trayMenu.Items.Add("立即刷新", null, delegate { RefreshTasks(); }); trayMenu.Items.Add("检查更新", null, delegate { BeginUpdateCheck(false); }); trayMenu.Items.Add("状态中心", null, delegate { ShowFullStatusCenter(); }); trayMenu.Items.Add("设置", null, delegate { ShowSettings(); }); trayMenu.Items.Add("退出", null, delegate { ExitApplication(); }); PixelTheme.StyleMenu(trayMenu); tray.ContextMenuStrip = trayMenu; ContextMenuStrip = trayMenu; widget.ContextMenuStrip = trayMenu;
     }
     void BuildTaskbarMenu() {
       taskbarMenu.Items.Add("切换到桌面灯杆", null, delegate { settings.TaskbarMode = false; Program.SaveSettings(settings); ApplyDisplayMode(); });
-      taskbarMenu.Items.Add("立即刷新", null, delegate { RefreshTasks(); }); taskbarMenu.Items.Add("检查更新", null, delegate { BeginUpdateCheck(false); }); taskbarMenu.Items.Add("状态中心", null, delegate { using (var form = new HistoryForm()) form.ShowDialog(); }); taskbarMenu.Items.Add("设置", null, delegate { ShowSettings(); }); taskbarMenu.Items.Add("退出", null, delegate { ExitApplication(); }); PixelTheme.StyleMenu(taskbarMenu);
+      taskbarMenu.Items.Add("立即刷新", null, delegate { RefreshTasks(); }); taskbarMenu.Items.Add("检查更新", null, delegate { BeginUpdateCheck(false); }); taskbarMenu.Items.Add("状态中心", null, delegate { ShowFullStatusCenter(); }); taskbarMenu.Items.Add("设置", null, delegate { ShowSettings(); }); taskbarMenu.Items.Add("退出", null, delegate { ExitApplication(); }); PixelTheme.StyleMenu(taskbarMenu);
     }
     void ShowSettings() { using (var dialog = new SettingsForm(settings, delegate(int ms) { timer.Interval = ms; }, delegate(bool enabled) { settings.TaskbarMode = enabled; ApplyDisplayMode(); }, delegate(int scale) { ApplyLampScale(); }, delegate { BeginUpdateCheck(false); })) { if (settings.TaskbarMode) dialog.ShowDialog(); else dialog.ShowDialog(this); } }
     public void OpenSettings() { ShowSettings(); }
@@ -293,11 +313,13 @@ namespace AgentTrafficLightNative {
         try {
           cycle.Runtime = AgentProcesses.Snapshot(); cycle.Tasks = engine.Scan(out cycle.FilesRead);
           var codexTasks = cycle.Tasks.FindAll(delegate(AgentTask task) { return task.Source == "Codex"; });
-          AgentTask latestCodex = AgentStateRules.LatestForSource("Codex", codexTasks);
-          bool codexPendingExec = latestCodex != null && latestCodex.PendingExec && latestCodex.Status != State.Complete;
-          bool codexAlreadyAttention = latestCodex != null && latestCodex.Status == State.Attention;
-          cycle.CodexUiAttention = codexPendingExec && !codexAlreadyAttention && AgentProcesses.CodexNeedsUserAttention(cycle.Runtime);
-          if (cycle.CodexUiAttention) { long eventAt = Util.Now(); cycle.Tasks.Add(new AgentTask { Id = "codex-ui-attention:" + eventAt, Source = "Codex", SessionId = "codex-ui", Title = "Codex", Status = State.Attention, Detail = "Codex 正在等待你的确认", Evidence = "Codex 当前可见审批卡", InteractionId = "ui:" + eventAt, StartedAt = eventAt, UpdatedAt = eventAt }); }
+          AgentTask codexUiTarget = AgentStateRules.SelectCodexUiAttentionTarget(codexTasks);
+          bool codexAlreadyAttention = codexTasks.Exists(delegate(AgentTask task) { return task.Status == State.Attention; });
+          cycle.CodexUiAttention = codexUiTarget != null && !codexAlreadyAttention && AgentProcesses.CodexNeedsUserAttention(cycle.Runtime);
+          if (cycle.CodexUiAttention) {
+            long eventAt = Util.Now();
+            cycle.Tasks.Add(new AgentTask { Id = "codex-ui-attention:" + codexUiTarget.Id, Source = "Codex", SessionId = codexUiTarget.SessionId, Title = codexUiTarget.Title, Cwd = codexUiTarget.Cwd, Status = State.Attention, Detail = "Codex 正在等待你的确认", Phase = "等待确认", Evidence = "Codex 当前可见审批卡", InteractionId = "ui:" + codexUiTarget.Id, StartedAt = codexUiTarget.StartedAt > 0 ? codexUiTarget.StartedAt : eventAt, UpdatedAt = eventAt, LastActivityAt = codexUiTarget.LastActivityAt });
+          }
         } catch (Exception ex) { cycle.Error = ex.GetType().Name + ": " + ex.Message; }
         watch.Stop(); cycle.DurationMs = watch.ElapsedMilliseconds;
         try { using (var current = Process.GetCurrentProcess()) cycle.PrivateMemoryMb = Math.Max(1, current.PrivateMemorySize64 / (1024 * 1024)); } catch { }
@@ -310,18 +332,27 @@ namespace AgentTrafficLightNative {
       if (pendingRescan) { pendingRescan = false; eventDebounceTimer.Stop(); eventDebounceTimer.Start(); }
     }
     void ApplyTasks(ScanCycle cycle) {
-      var tasks = cycle.Tasks ?? lastGoodTasks; var detected = LatestPerAgent(tasks); var runtime = cycle.Runtime ?? new AgentRuntimeSnapshot(); var agents = new List<AgentTask>();
+      var tasks = cycle.Tasks ?? lastGoodTasks; var detected = LatestPerAgent(tasks); var runtime = cycle.Runtime ?? new AgentRuntimeSnapshot();
+      var activeTasks = ActiveTaskRules.Active(tasks, runtime);
+      bool allowClaudeToolOverride = ActiveTaskRules.AllowGlobalClaudeToolOverride(activeTasks);
+      foreach (var task in activeTasks) if (allowClaudeToolOverride && task.Source == "Claude Code" && task.Status == State.Attention && AgentProcesses.ClaudeHasActiveToolProcess(task.UpdatedAt)) { task.Status = State.Running; task.Detail = "Shell 或工具正在执行"; task.Phase = "执行工具"; }
+      var lifecycleTasks = ActiveTaskRules.Relevant(tasks, runtime, true); var lifecycleById = new Dictionary<string, AgentTask>(StringComparer.OrdinalIgnoreCase);
+      foreach (var task in lifecycleTasks) lifecycleById[task.Id] = task; foreach (var task in activeTasks) lifecycleById[task.Id] = task;
+      lifecycleTasks = new List<AgentTask>(lifecycleById.Values);
+      var health = ActiveTaskRules.Health(runtime, tasks, activeTasks); var agents = new List<AgentTask>();
       foreach (string source in new[] { "TRAE", "Codex", "Claude Code", "OpenCode" }) if (runtime.Sources.Contains(source)) {
         long seenAt; if (!sourceSeenAt.TryGetValue(source, out seenAt)) { seenAt = runtime.CapturedAt > 0 ? runtime.CapturedAt : Util.Now(); sourceSeenAt[source] = seenAt; }
         long runtimeStarted = 0; runtime.StartedAt.TryGetValue(source, out runtimeStarted);
         var candidate = detected.Find(delegate(AgentTask t) { return t.Source == source; }); AgentTask previous = null; resolvedStates.TryGetValue(source, out previous);
-        var resolved = AgentStateRules.ResolveForRuntime(source, candidate, runtimeStarted, seenAt, previous); agents.Add(resolved); resolvedStates[source] = AgentStateRules.Clone(resolved);
+        var resolved = ActiveTaskRules.Aggregate(source, activeTasks, candidate, runtimeStarted, seenAt, previous);
+        var sourceHealth = health.Find(delegate(TaskSourceHealth item) { return item.Source == source; }); if (sourceHealth != null) { resolved.HealthState = sourceHealth.State; resolved.HealthDetail = sourceHealth.Detail; }
+        agents.Add(resolved); resolvedStates[source] = AgentStateRules.Clone(resolved);
       }
       foreach (string source in new List<string>(sourceSeenAt.Keys)) if (!runtime.Sources.Contains(source)) { sourceSeenAt.Remove(source); resolvedStates.Remove(source); }
-      var claudeTask = agents.Find(delegate(AgentTask task) { return task.Source == "Claude Code"; }); if (claudeTask != null && claudeTask.Status == State.Attention && AgentProcesses.ClaudeHasActiveToolProcess(claudeTask.UpdatedAt)) { claudeTask.Status = State.Running; claudeTask.Detail = "Shell 或工具正在执行"; }
-      currentAgents = agents;
-      ProcessStateTransitions(agents);
-      UsageStatistics.Update(agents, Util.Now());
+      currentAgents = agents; currentTasks = activeTasks; currentHealth = health; TaskCenterState.Update(activeTasks, health);
+      if (queuePopup != null && !queuePopup.IsDisposed) queuePopup.UpdateData(activeTasks, health);
+      ProcessStateTransitions(lifecycleTasks);
+      UsageStatistics.Update(lifecycleTasks, Util.Now());
       cycle.EffectiveIntervalMs = AdaptiveScanPolicy.Interval(settings, agents); if (timer.Interval != cycle.EffectiveIntervalMs) timer.Interval = cycle.EffectiveIntervalMs;
       int red = agents.FindAll(delegate(AgentTask t) { return t.Status == State.Complete; }).Count, yellow = agents.FindAll(delegate(AgentTask t) { return t.Status == State.Attention; }).Count, green = agents.FindAll(delegate(AgentTask t) { return t.Status == State.Running; }).Count;
       if (yellow > 0) tray.Icon = CachedCircleIcon("attention", Color.FromArgb(255, 199, 35)); else if (green > 0) tray.Icon = CachedCircleIcon("running", Color.FromArgb(35, 220, 105)); else if (red > 0) tray.Icon = CachedCircleIcon("complete", Color.FromArgb(255, 56, 72)); else tray.Icon = CachedCircleIcon("idle", Color.FromArgb(100, 116, 139));
@@ -334,16 +365,16 @@ namespace AgentTrafficLightNative {
     void ProcessStateTransitions(List<AgentTask> agents) {
       var active = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
       foreach (var task in agents) {
-        active.Add(task.Source); string previous; bool existed = transitionStates.TryGetValue(task.Source, out previous);
+        string transitionKey = String.IsNullOrWhiteSpace(task.Id) ? task.Source : task.Id; active.Add(transitionKey); string previous; bool existed = transitionStates.TryGetValue(transitionKey, out previous);
         if (!existed || !String.Equals(previous, task.Status, StringComparison.OrdinalIgnoreCase)) {
-          transitionStates[task.Source] = task.Status; StateHistory.Record(task);
-          if (transitionBaselineReady && task.Status == State.Attention && NotificationPolicy.ShouldNotify(settings, task)) {
+          transitionStates[transitionKey] = task.Status; StateHistory.Record(task);
+          if ((transitionBaselineReady || task.Restored) && task.Status == State.Attention && NotificationPolicy.ShouldNotify(settings, task)) {
             string key = NotificationKey(task, "attention"); if (!sentAttentionNotifications.Contains(key)) pendingAttentionNotifications[key] = Util.Now() + NotificationPolicy.AttentionDelayMs(settings);
-          } else if (transitionBaselineReady && task.Status == State.Complete && NotificationPolicy.ShouldNotify(settings, task)) ShowStateNotification(task);
+          } else if (transitionBaselineReady && existed && task.Status == State.Complete && NotificationPolicy.ShouldNotify(settings, task)) ShowStateNotification(task);
         }
       }
-      foreach (string source in new List<string>(transitionStates.Keys)) if (!active.Contains(source)) transitionStates.Remove(source);
-      FlushNotificationPolicy(agents);
+      foreach (string key in new List<string>(transitionStates.Keys)) if (!active.Contains(key)) transitionStates.Remove(key);
+      FlushNotificationPolicy(currentTasks);
       transitionBaselineReady = true;
     }
     string NotificationKey(AgentTask task, string kind) { string interaction = kind == "attention" && !String.IsNullOrWhiteSpace(task.InteractionId) ? task.InteractionId : (task.Id ?? ""); return (task.Source ?? "") + "|" + interaction + "|" + kind; }

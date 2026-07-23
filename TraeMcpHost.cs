@@ -11,7 +11,7 @@ namespace AgentBeaconTraeMcp {
   // The settings installer extracts it locally, and TRAE communicates with it
   // through newline-delimited JSON-RPC over stdio.
   static class TraeMcpHost {
-    const string Version = "1.5.0";
+    const string Version = "1.6.0";
     static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = 4 * 1024 * 1024 };
     static readonly string ProcessSession = "mcp-" + Process.GetCurrentProcess().Id + "-" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     static string Home { get { string configured = Environment.GetEnvironmentVariable("AGENT_TRAFFIC_LIGHT_HOME"); if (!String.IsNullOrWhiteSpace(configured)) return configured; string profile = Environment.GetEnvironmentVariable("USERPROFILE"); return String.IsNullOrWhiteSpace(profile) ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) : profile; } }
@@ -73,7 +73,8 @@ namespace AgentBeaconTraeMcp {
       string session = SafeId(S(arguments, "session_id", ProcessSession), ProcessSession), taskId = session;
       long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), started = now; string path = Path.Combine(BridgeDir, "trae-mcp-" + Hash(session) + ".json");
       try { if (File.Exists(path)) { var old = Json.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)) as IDictionary<string, object>; if (old != null && S(old, "sessionId", "") == session) started = N(old, "startedAt", now); } } catch { }
-      var row = Obj("source", "TRAE", "integration", "mcp", "helperVersion", Version, "id", "trae-mcp:" + taskId, "sessionId", session, "title", "TRAE Work", "status", status, "detail", fallback, "startedAt", started, "updatedAt", now, "explicitStart", true, "reliableStart", true, "reportedState", input);
+      string phase = input == "running" ? "处理中" : input == "waiting" ? "等待确认" : input == "completed" ? "已完成" : input == "failed" ? "已失败" : "已取消";
+      var row = Obj("source", "TRAE", "integration", "mcp", "helperVersion", Version, "id", "trae-mcp:" + taskId, "sessionId", session, "title", "TRAE Work", "status", status, "detail", fallback, "phase", phase, "startedAt", started, "lastActivityAt", now, "updatedAt", now, "explicitStart", true, "reliableStart", true, "reportedState", input);
       AtomicWrite(path, Json.Serialize(row));
       string reply = input == "waiting" ? "ok; 立即显示确认；回复后先 running" : input == "completed" ? "ok; 立即输出最终答复" : "ok";
       var content = Obj("type", "text", "text", reply);

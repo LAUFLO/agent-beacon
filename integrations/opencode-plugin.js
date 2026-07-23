@@ -8,7 +8,7 @@ const pick = (properties, names) => {
   return undefined;
 };
 
-function writeEvent(event, directory) {
+function writeEvent(event, directory, projectDirectory) {
   const properties = event?.properties || {};
   const session = properties.session || properties.info || {};
   const rawSessionId = pick(properties, ['sessionID', 'sessionId']) ?? session.id;
@@ -24,6 +24,7 @@ function writeEvent(event, directory) {
   const eventType = event?.type;
   let status;
   let detail;
+  let phase;
   let pendingInteraction = previous.pendingInteraction || null;
   const requestId = String(pick(properties, ['requestID', 'requestId']) ?? '').trim();
   const askedKind = eventType === 'question.asked' ? 'question' : eventType === 'permission.asked' ? 'permission' : '';
@@ -32,43 +33,52 @@ function writeEvent(event, directory) {
   if (askedKind) {
     status = 'attention';
     detail = askedKind === 'question' ? '等待你回答问题或选择选项' : '等待你的权限确认';
+    phase = askedKind === 'question' ? '等待输入' : '等待确认';
     pendingInteraction = { kind: askedKind, requestID: requestId };
   } else if (resolvedKind) {
     if (pendingInteraction?.kind && pendingInteraction.kind !== resolvedKind) return false;
     if (pendingInteraction?.requestID && requestId && pendingInteraction.requestID !== requestId) return false;
     status = 'running';
     detail = eventType === 'question.rejected' ? '问题已忽略，继续执行' : '已确认，继续执行';
+    phase = '继续处理';
     pendingInteraction = null;
   } else if (eventType === 'session.idle') {
     if (pendingInteraction) return false;
-    status = 'complete'; detail = '任务已完成'; pendingInteraction = null;
+    status = 'complete'; detail = '任务已完成'; phase = '已完成'; pendingInteraction = null;
   } else if (eventType === 'session.error') {
-    status = 'complete'; detail = '任务失败并结束'; pendingInteraction = null;
+    status = 'complete'; detail = '任务失败并结束'; phase = '已失败'; pendingInteraction = null;
   } else if (eventType === 'tool.execute.before') {
     if (pendingInteraction) return false;
-    status = 'running'; detail = '正在执行工具';
+    status = 'running'; detail = '正在执行工具'; phase = '执行工具';
   } else if (eventType === 'session.status') {
     const kind = properties.status?.type || properties.status;
     if (pendingInteraction) return false;
-    if (kind === 'idle') { status = 'complete'; detail = '任务已完成'; pendingInteraction = null; }
-    else if (kind === 'busy' || kind === 'running' || kind === 'retry') { status = 'running'; detail = '正在执行'; pendingInteraction = null; }
+    if (kind === 'idle') { status = 'complete'; detail = '任务已完成'; phase = '已完成'; pendingInteraction = null; }
+    else if (kind === 'busy' || kind === 'running' || kind === 'retry') { status = 'running'; detail = '正在执行'; phase = kind === 'retry' ? '正在重试' : '处理中'; pendingInteraction = null; }
     else return false;
   } else {
     return false;
   }
 
   const now = Date.now();
+  const reportedProgress = Number(properties.status?.progress ?? properties.progress);
+  const progress = Number.isFinite(reportedProgress) && reportedProgress >= 0 && reportedProgress <= 100 ? Math.round(reportedProgress) : undefined;
   const row = {
     ...previous,
-    version: 1,
+    version: 2,
     source: 'OpenCode',
     id: `opencode:${sessionId}`,
     sessionId,
     title: session.title || properties.title || previous.title || `OpenCode ${sessionId.slice(-6)}`,
     status,
     detail,
+    phase,
+    progress,
+    cwd: projectDirectory || previous.cwd,
+    eventType,
     pendingInteraction,
     startedAt: previous.startedAt || now,
+    lastActivityAt: now,
     updatedAt: now
   };
   const temporary = `${target}.${process.pid}.tmp`;
@@ -79,7 +89,7 @@ function writeEvent(event, directory) {
 
 export { writeEvent };
 
-export const AgentBeaconPlugin = async () => {
+export const AgentBeaconPlugin = async ({ directory: projectDirectory, worktree } = {}) => {
   const directory = path.join(os.homedir(), '.agent-traffic-light', 'events');
-  return { event: async ({ event }) => writeEvent(event, directory) };
+  return { event: async ({ event }) => writeEvent(event, directory, worktree || projectDirectory) };
 };
