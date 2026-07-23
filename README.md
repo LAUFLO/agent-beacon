@@ -75,4 +75,23 @@ Helper 由 Agent Beacon 按内容哈希自动更新。若设置页提示 Helper 
 - Setup EXE：安装到当前用户目录，创建开始菜单入口并支持卸载
 - 只有启用 TRAE MCP 时，程序才会释放内嵌的轻量 Helper
 
+## 项目结构
+
+- `src/Core`：状态模型、诊断和通用工具。
+- `src/Monitoring`：Agent 会话解析、进程检测和状态规则。
+- `src/UI`：主窗口、设置页、状态灯及像素主题。
+- `src/Features`：任务中心等独立功能。
+- `src/Integrations`：TRAE、Claude Code 和 OpenCode 集成。
+- `src/Services`：更新、通知、统计和桌面服务。
+- `installer`：安装程序入口和控件。
+- `tests`：状态、协议、UI、发布和可复现构建测试。
+
+应用源码清单统一维护在 `tools/Get-AppSourceFiles.ps1`，构建和回归测试共享同一份路径定义。
+
 各版本的独立更新说明保存在 [`releases`](releases) 目录。
+
+## 发布
+
+版本号、更新说明和代码必须先通过 PR 合并到 `main`。本地切换并同步 `main` 后，可先运行 `.\publish.ps1 -DryRun` 检查发布条件，再运行 `.\publish.ps1` 调度 GitHub Actions。
+
+`publish.ps1` 不会暂存、提交、合并、切换分支、推送或创建标签；工作区不干净、本地与远端 `main` 不一致或版本已发布时会直接停止。

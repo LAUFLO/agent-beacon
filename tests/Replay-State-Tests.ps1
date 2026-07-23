@@ -9,9 +9,9 @@ $openTarget = Join-Path $bridge 'opencode-replay.json'
 New-Item -ItemType Directory -Force -Path (Split-Path $codexTarget), (Split-Path $claudeTarget), $bridge | Out-Null
 $dll = Join-Path $work 'AgentTrafficLight.Tests.dll'
 $mcpExe = Join-Path $work 'Agent-Beacon-MCP.exe'
-$appSources = @('AppInfo.cs','PixelTheme.cs','DpiSupport.cs','StateHistory.cs','UsageStatistics.cs','DesktopFeatures.cs','TaskCenter.cs','UpdateService.cs','AgentUi.cs','Integrations.cs','CodexEventCompatibility.cs','AgentTrafficLight.cs') | ForEach-Object { Join-Path $root $_ }
+$appSources = & (Join-Path $root 'tools\Get-AppSourceFiles.ps1') -Root $root
 
-& 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe' /nologo /target:exe /optimize+ /platform:anycpu /out:$mcpExe /reference:System.dll /reference:System.Core.dll /reference:System.Web.Extensions.dll (Join-Path $root 'TraeMcpHost.cs')
+& 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe' /nologo /target:exe /optimize+ /platform:anycpu /out:$mcpExe /reference:System.dll /reference:System.Core.dll /reference:System.Web.Extensions.dll (Join-Path $root 'src\Integrations\TraeMcpHost.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Test MCP helper compilation failed.' }
 & 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe' /nologo /target:library /out:$dll /reference:System.dll /reference:System.Core.dll /reference:System.Drawing.dll /reference:System.Windows.Forms.dll /reference:System.Web.Extensions.dll /reference:'C:\Windows\Microsoft.NET\assembly\GAC_MSIL\UIAutomationClient\v4.0_4.0.0.0__31bf3856ad364e35\UIAutomationClient.dll' /reference:'C:\Windows\Microsoft.NET\assembly\GAC_MSIL\UIAutomationTypes\v4.0_4.0.0.0__31bf3856ad364e35\UIAutomationTypes.dll' ('/resource:' + $mcpExe + ',trae-mcp-host.exe') $appSources
 if ($LASTEXITCODE -ne 0) { throw 'Test assembly compilation failed.' }
@@ -49,9 +49,15 @@ foreach ($name in @('TraeNeedsUserAttention','TraeHasVisualAttention')) {
 $codexUiProbe = $processType.GetMethod('CodexNeedsUserAttention', [Reflection.BindingFlags]'Static,NonPublic,Public')
 $codexPromptText = $processType.GetMethod('IsCodexApprovalPromptText', [Reflection.BindingFlags]'Static,NonPublic,Public')
 $codexActionText = $processType.GetMethod('IsCodexApprovalActionText', [Reflection.BindingFlags]'Static,NonPublic,Public')
-if (-not $codexUiProbe -or -not $codexPromptText -or -not $codexActionText -or -not ($assembly.GetReferencedAssemblies().Name -match '^UIAutomation')) { throw 'Minimal Codex approval probe is missing.' }
+$codexApprovalElement = $processType.GetMethod('ShouldConsiderCodexApprovalElement', [Reflection.BindingFlags]'Static,NonPublic,Public')
+$codexUiScanDelay = $processType.GetMethod('CodexUiScanDelay', [Reflection.BindingFlags]'Static,NonPublic,Public')
+if (-not $codexUiProbe -or -not $codexPromptText -or -not $codexActionText -or -not $codexApprovalElement -or -not $codexUiScanDelay -or -not ($assembly.GetReferencedAssemblies().Name -match '^UIAutomation')) { throw 'Minimal Codex approval probe is missing.' }
 if (-not $codexPromptText.Invoke($null, @('Do you want to allow ChatGPT to run this command?')) -or -not $codexPromptText.Invoke($null, @('Allow GitHub to create a pull request?')) -or -not $codexPromptText.Invoke($null, @('Approval required by Codex')) -or -not $codexPromptText.Invoke($null, @('是否允许补充当前用户 PATH，使安装后的 kdocs-cli 可在新终端中直接运行？')) -or $codexPromptText.Invoke($null, @('GitHub can create a pull request.'))) { throw 'Codex approval prompt text was not recognized safely.' }
 if (-not $codexActionText.Invoke($null, @('允许一次')) -or -not $codexActionText.Invoke($null, @('始终允许')) -or $codexActionText.Invoke($null, @('展开'))) { throw 'Codex approval action text was not recognized safely.' }
+if (-not $codexApprovalElement.Invoke($null, @($true, $true)) -or -not $codexApprovalElement.Invoke($null, @($false, $true)) -or $codexApprovalElement.Invoke($null, @($true, $false))) { throw 'Codex approval elements are incorrectly discarded while the app is backgrounded or minimized.' }
+if ($codexUiScanDelay.Invoke($null, @($true, $false)) -ne 750 -or $codexUiScanDelay.Invoke($null, @($false, $true)) -ne 900 -or $codexUiScanDelay.Invoke($null, @($false, $false)) -ne 3000) { throw 'Codex UI scan throttling does not preserve urgent detection while reducing idle scans.' }
+$agentProcessesSource = Get-Content -LiteralPath (Join-Path $root 'src\Monitoring\AgentProcesses.cs') -Encoding UTF8 -Raw
+if ($agentProcessesSource -match '(?:current|cached)\.IsOffscreen\)\s*continue' -or ([regex]::Matches($agentProcessesSource, 'ShouldConsiderCodexApprovalElement\((?:current|cached)\.IsOffscreen, (?:current|cached)\.IsEnabled\)')).Count -lt 2) { throw 'Codex UI probe still skips backgrounded approval prompts or actions.' }
 Write-Host 'PASS TRAE fallbacks are absent and minimal Codex approval probe is present'
 
 function Invoke-Replay([string]$source, [string[]]$files, [string]$target, [string[]]$expected) {
@@ -141,6 +147,14 @@ $pixel = [Activator]::CreateInstance($pixelType, $true)
 $centers = $pixelType.GetMethod('HeadCenters', [Reflection.BindingFlags]'Instance,NonPublic').Invoke($pixel, @(4, 150))
 if ($centers.Count -ne 4 -or ($centers -join ',') -ne '48,116,184,252') { throw "Four-light layout failed: $($centers -join ',')" }
 $pixel.Dispose()
+$themeType = $assembly.GetType('AgentTrafficLightNative.PixelTheme')
+$disposeChildren = $themeType.GetMethod('DisposeChildren', [Reflection.BindingFlags]'Static,NonPublic,Public')
+$controlHost = New-Object System.Windows.Forms.Panel
+$controlChild = New-Object System.Windows.Forms.Button
+$controlHost.Controls.Add($controlChild)
+$disposeChildren.Invoke($null, @($controlHost.PSObject.BaseObject))
+if ($controlHost.Controls.Count -ne 0 -or -not $controlChild.IsDisposed) { throw 'Dynamic pixel controls were removed without being disposed.' }
+$controlHost.Dispose()
 Write-Host 'PASS four-agent concurrent state and pixel layout'
 
 $runtimeType = $assembly.GetType('AgentTrafficLightNative.AgentRuntimeSnapshot')
@@ -395,14 +409,14 @@ $focusTask = $windowType.GetMethods([Reflection.BindingFlags]'Static,NonPublic,P
 if (-not $matchesWindow.Invoke($null, @('Codex','ChatGPT','')) -or -not $matchesWindow.Invoke($null, @('TRAE','TRAE','')) -or -not $focusTask) { throw 'Agent window/task matching rules failed.' }
 $updateType = $assembly.GetType('AgentTrafficLightNative.UpdateService')
 $safeTarget = $updateType.GetMethod('IsSafeUpdateTarget', [Reflection.BindingFlags]'Static,NonPublic,Public')
-if (-not $safeTarget.Invoke($null, @('D:\Agent-Beacon-1.6.1.exe')) -or $safeTarget.Invoke($null, @('C:\Windows\System32\notepad.exe'))) { throw 'Automatic update target validation failed.' }
+if (-not $safeTarget.Invoke($null, @('D:\Agent-Beacon-1.6.2.exe')) -or $safeTarget.Invoke($null, @('C:\Windows\System32\notepad.exe'))) { throw 'Automatic update target validation failed.' }
 $parseRelease = $updateType.GetMethod('ParseRelease', [Reflection.BindingFlags]'Static,NonPublic,Public')
 $releaseJson = '{"tag_name":"v9.9.9","html_url":"https://github.com/LAUFLO/agent-beacon/releases/tag/v9.9.9","assets":[{"name":"Agent-Beacon-9.9.9.exe","browser_download_url":"https://example.invalid/Agent-Beacon-9.9.9.exe","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}'
 $releaseInfo = $parseRelease.Invoke($null, @($releaseJson))
 $updateInfoType = $assembly.GetType('AgentTrafficLightNative.UpdateInfo')
 if ($updateInfoType.GetField('Version').GetValue($releaseInfo) -ne '9.9.9' -or $updateInfoType.GetField('Sha256').GetValue($releaseInfo).Length -ne 64) { throw 'GitHub release asset/digest parsing failed.' }
 $appInfoType = $assembly.GetType('AgentTrafficLightNative.AppInfo')
-if ($appInfoType.GetField('Version', [Reflection.BindingFlags]'Static,NonPublic,Public').GetRawConstantValue() -ne '1.6.1') { throw 'Application version metadata is not 1.6.1.' }
+if ($appInfoType.GetField('Version', [Reflection.BindingFlags]'Static,NonPublic,Public').GetRawConstantValue() -ne '1.6.2') { throw 'Application version metadata is not 1.6.2.' }
 Write-Host 'PASS click-to-focus matching, safe GitHub updater and centralized version metadata'
 
 $integrationType = $assembly.GetType('AgentTrafficLightNative.Integration')

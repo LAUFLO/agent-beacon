@@ -7,7 +7,7 @@ $second = Join-Path $work 'second'
 try {
   & (Join-Path $root 'build.ps1') -OutputDirectory $first | Out-Null
   & (Join-Path $root 'build.ps1') -OutputDirectory $second | Out-Null
-  $versionMatch = Select-String -LiteralPath (Join-Path $root 'AppInfo.cs') -Pattern 'public const string Version = "([0-9]+\.[0-9]+\.[0-9]+)"' | Select-Object -First 1
+  $versionMatch = Select-String -LiteralPath (Join-Path $root 'src\Core\AppInfo.cs') -Pattern 'public const string Version = "([0-9]+\.[0-9]+\.[0-9]+)"' | Select-Object -First 1
   if (-not $versionMatch) { throw 'Version not found.' }
   $version = $versionMatch.Matches[0].Groups[1].Value
   foreach ($name in @("Agent-Beacon-$version.exe", "Agent-Beacon-Setup-$version.exe", "Agent-Beacon-Portable-$version.zip")) {

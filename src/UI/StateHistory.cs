@@ -119,6 +119,7 @@ namespace AgentTrafficLightNative {
 
   sealed class HistoryForm : Form {
     const int WM_SETREDRAW = 0x000B;
+    const int TaskRowsPerSection = 2;
     [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr handle, int message, IntPtr wParam, IntPtr lParam);
     readonly PixelLogBox diagnostic = new PixelLogBox(), content = new PixelLogBox();
     readonly PixelPage overviewPage = new PixelPage(), morePage = new PixelPage();
@@ -126,17 +127,18 @@ namespace AgentTrafficLightNative {
     readonly PixelButton moreButton, backButton;
     readonly System.Windows.Forms.Timer refreshTimer = new System.Windows.Forms.Timer();
     bool dragging, reloading;
+    int waitingScrollOffset, runningScrollOffset;
     Point dragOrigin;
     string overviewSignature = "", moreSignature = "";
 
     public HistoryForm() {
-      Text = "Agent Beacon 状态中心"; Icon = PixelTheme.AppIcon; ClientSize = new Size(760, 438); StartPosition = FormStartPosition.CenterParent; FormBorderStyle = FormBorderStyle.None; MaximizeBox = false; MinimizeBox = false;
+      Text = "Agent Beacon 状态中心"; Icon = PixelTheme.AppIcon; ClientSize = new Size(620, 358); StartPosition = FormStartPosition.CenterParent; FormBorderStyle = FormBorderStyle.None; MaximizeBox = false; MinimizeBox = false;
       ShowInTaskbar = Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") == "1"; BackColor = PixelTheme.Paper; ForeColor = PixelTheme.Ink; Font = PixelTheme.TextFont; AutoScaleMode = AutoScaleMode.Dpi; DoubleBuffered = true;
-      title = PixelTheme.Label("AGENT BEACON v" + AppInfo.Version + " // 状态中心", new Point(95, 8), new Size(550, 32), true); Controls.Add(title);
-      backButton = new PixelButton { Text = "返回", Location = new Point(15, 9), Size = new Size(70, 27), Visible = false }; backButton.Click += delegate { ShowOverview(); }; Controls.Add(backButton);
-      moreButton = new PixelButton { Text = "更多", Location = new Point(650, 9), Size = new Size(58, 27) }; moreButton.Click += delegate { ShowMore(); }; Controls.Add(moreButton);
-      var close = new PixelButton { Text = "X", Danger = true, Location = new Point(719, 9), Size = new Size(28, 27) }; close.Click += delegate { Close(); }; Controls.Add(close);
-      overviewPage.Location = new Point(6, 46); overviewPage.Size = new Size(748, 386); overviewPage.BackColor = PixelTheme.Paper; overviewPage.Paint += delegate(object sender, PaintEventArgs e) { using (var line = new Pen(PixelTheme.Ink, 3)) e.Graphics.DrawLine(line, 0, 350, 748, 350); }; Controls.Add(overviewPage);
+      title = PixelTheme.Label("AGENT BEACON v" + AppInfo.Version + " // 状态中心", new Point(82, 8), new Size(438, 32), true); Controls.Add(title);
+      backButton = new PixelButton { Text = "返回", Location = new Point(15, 9), Size = new Size(60, 27), Visible = false }; backButton.Click += delegate { ShowOverview(); }; Controls.Add(backButton);
+      moreButton = new PixelButton { Text = "更多", Location = new Point(526, 9), Size = new Size(50, 27) }; moreButton.Click += delegate { ShowMore(); }; Controls.Add(moreButton);
+      var close = new PixelButton { Text = "X", Danger = true, Location = new Point(582, 9), Size = new Size(28, 27) }; close.Click += delegate { Close(); }; Controls.Add(close);
+      overviewPage.Location = new Point(6, 46); overviewPage.Size = new Size(608, 306); overviewPage.BackColor = PixelTheme.Paper; overviewPage.Paint += delegate(object sender, PaintEventArgs e) { using (var line = new Pen(PixelTheme.Ink, 3)) e.Graphics.DrawLine(line, 0, 276, 608, 276); }; Controls.Add(overviewPage);
       morePage.Location = overviewPage.Location; morePage.Size = overviewPage.Size; morePage.BackColor = PixelTheme.Paper; morePage.Visible = false; Controls.Add(morePage);
       BuildMorePage();
       MouseDown += BeginDrag; MouseMove += ContinueDrag; MouseUp += EndDrag; title.MouseDown += BeginDrag; title.MouseMove += ContinueDrag; title.MouseUp += EndDrag;
@@ -166,25 +168,16 @@ namespace AgentTrafficLightNative {
       var tasks = ActiveTaskRules.Collapse(TaskCenterState.Tasks()); var history = StateHistory.Recent(300);
       string signature = OverviewSignature(tasks, TaskCenterState.Health(), history); if (String.Equals(signature, overviewSignature, StringComparison.Ordinal)) return; overviewSignature = signature;
       RenderAtomically(overviewPage, delegate {
-        overviewPage.Controls.Clear();
+        PixelTheme.DisposeChildren(overviewPage);
         string[] sources = { "Codex", "TRAE", "Claude Code", "OpenCode" };
-        for (int i = 0; i < sources.Length; i++) AddSummaryCard(sources[i], 10 + i * 182, tasks, history);
+        for (int i = 0; i < sources.Length; i++) AddSummaryCard(sources[i], 8 + i * 149, tasks, history);
         var waiting = tasks.FindAll(delegate(AgentTask task) { return task.Status == State.Attention; });
         var running = tasks.FindAll(delegate(AgentTask task) { return task.Status == State.Running; });
-        int waitingRows = Math.Min(3, waiting.Count);
-        AddSectionHeader("待我处理", waiting.Count, PixelTheme.Yellow, 88);
-        if (waiting.Count > 0) AddDismissAllButton(waiting, 88);
-        if (waiting.Count == 0) overviewPage.Controls.Add(PixelTheme.Label("当前没有需要处理的任务", new Point(20, 112), new Size(708, 36), false));
-        else for (int i = 0; i < waitingRows; i++) AddTaskRow(waiting[i], 112 + i * 40, true);
-        int runningHeaderY = waiting.Count == 0 ? 158 : 118 + waitingRows * 40;
-        int runningRowsY = runningHeaderY + 24;
-        int runningRows = Math.Min(running.Count, Math.Min(3, Math.Max(0, 5 - waitingRows)));
-        AddSectionHeader("正在运行", running.Count, PixelTheme.Green, runningHeaderY);
-        if (running.Count == 0) overviewPage.Controls.Add(PixelTheme.Label("当前没有正在运行的任务", new Point(20, runningRowsY), new Size(708, 36), false));
-        else for (int i = 0; i < runningRows; i++) AddTaskRow(running[i], runningRowsY + i * 40, false);
+        AddTaskSection("待我处理", waiting, PixelTheme.Yellow, 62, true, waitingScrollOffset, delegate(int value) { waitingScrollOffset = value; });
+        AddTaskSection("正在运行", running, PixelTheme.Green, 170, false, runningScrollOffset, delegate(int value) { runningScrollOffset = value; });
         string at = DateTime.Now.ToString("HH:mm:ss");
-        overviewPage.Controls.Add(new Label { Text = "最后更新  " + at, Location = new Point(18, 357), Size = new Size(190, 20), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = PixelTheme.Muted, Font = PixelTheme.SmallFont });
-        overviewPage.Controls.Add(new Label { Text = "仅显示项目简称、状态和时间，不保存聊天正文", Location = new Point(350, 357), Size = new Size(378, 20), AutoSize = false, TextAlign = ContentAlignment.MiddleRight, BackColor = Color.Transparent, ForeColor = PixelTheme.Muted, Font = PixelTheme.SmallFont });
+        overviewPage.Controls.Add(new Label { Text = "最后更新  " + at, Location = new Point(14, 282), Size = new Size(160, 18), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = PixelTheme.Muted, Font = PixelTheme.SmallFont });
+        overviewPage.Controls.Add(new Label { Text = "仅显示简称、状态和时间，不保存聊天正文", Location = new Point(220, 282), Size = new Size(374, 18), AutoSize = false, TextAlign = ContentAlignment.MiddleRight, BackColor = Color.Transparent, ForeColor = PixelTheme.Muted, Font = PixelTheme.SmallFont });
       });
     }
 
@@ -194,62 +187,84 @@ namespace AgentTrafficLightNative {
       long dayStart = new DateTimeOffset(DateTime.Today).ToUnixTimeMilliseconds();
       int completed = history.FindAll(delegate(StateHistoryItem item) { return item.Source == source && item.Status == State.Complete && item.At >= dayStart; }).Count;
       Color color = waiting > 0 ? PixelTheme.Yellow : running > 0 ? PixelTheme.Green : completed > 0 ? PixelTheme.Red : PixelTheme.Muted;
-      var panel = new Panel { Location = new Point(x, 6), Size = new Size(172, 76), BackColor = PixelTheme.Paper };
-      panel.Paint += delegate(object sender, PaintEventArgs e) { using (var shadow = new SolidBrush(PixelTheme.Grid)) e.Graphics.FillRectangle(shadow, 6, 6, panel.Width - 6, panel.Height - 6); using (var paper = new SolidBrush(PixelTheme.Paper)) e.Graphics.FillRectangle(paper, 1, 1, panel.Width - 8, panel.Height - 8); using (var ink = new Pen(PixelTheme.Ink, 3)) e.Graphics.DrawRectangle(ink, 1, 1, panel.Width - 8, panel.Height - 8); using (var lamp = new SolidBrush(color)) e.Graphics.FillRectangle(lamp, 15, 20, 14, 14); using (var ink = new Pen(PixelTheme.Ink, 3)) e.Graphics.DrawRectangle(ink, 12, 17, 20, 20); };
-      panel.Controls.Add(new Label { Text = source, Location = new Point(43, 10), Size = new Size(118, 26), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = PixelTheme.Ink, Font = PixelTheme.StrongFont });
+      var panel = new Panel { Location = new Point(x, 4), Size = new Size(142, 52), BackColor = PixelTheme.Paper };
+      panel.Paint += delegate(object sender, PaintEventArgs e) { using (var shadow = new SolidBrush(PixelTheme.Grid)) e.Graphics.FillRectangle(shadow, 4, 4, panel.Width - 4, panel.Height - 4); using (var paper = new SolidBrush(PixelTheme.Paper)) e.Graphics.FillRectangle(paper, 1, 1, panel.Width - 6, panel.Height - 6); using (var ink = new Pen(PixelTheme.Ink, 3)) e.Graphics.DrawRectangle(ink, 1, 1, panel.Width - 6, panel.Height - 6); using (var lamp = new SolidBrush(color)) e.Graphics.FillRectangle(lamp, 13, 18, 12, 12); using (var ink = new Pen(PixelTheme.Ink, 3)) e.Graphics.DrawRectangle(ink, 10, 15, 18, 18); };
+      panel.Controls.Add(new Label { Text = source, Location = new Point(35, 3), Size = new Size(100, 22), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = PixelTheme.Ink, Font = PixelTheme.StrongFont });
       string state = waiting > 0 ? "等待 " + waiting + (running > 0 ? "   运行 " + running : "") : running > 0 ? "运行 " + running : completed > 0 ? "完成 " + completed : "空闲";
-      panel.Controls.Add(new Label { Text = state, Location = new Point(14, 39), Size = new Size(146, 24), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = color, Font = PixelTheme.StrongFont });
+      panel.Controls.Add(new Label { Text = state, Location = new Point(35, 24), Size = new Size(100, 20), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = color, Font = PixelTheme.StrongFont });
       overviewPage.Controls.Add(panel);
     }
 
-    void AddSectionHeader(string name, int count, Color color, int y) {
-      overviewPage.Controls.Add(new Label { Text = name + "  " + count, Location = new Point(14, y), Size = new Size(220, 24), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = color, Font = PixelTheme.TitleFont });
-    }
-
-    void AddDismissAllButton(List<AgentTask> waiting, int y) {
-      var dismissAll = new PixelButton { Text = "清除全部", Danger = true, Location = new Point(624, y - 1), Size = new Size(104, 26) };
-      dismissAll.Click += delegate {
-        if (PixelDialog.Show(this, "清除当前全部等待状态吗？\n\n同一会话有新的 MCP 或 Agent 事件时会自动恢复监控。", "清除全部等待", PixelDialogButtons.YesNo) == DialogResult.Yes) {
-          TaskCenterState.DismissAll(waiting); overviewSignature = ""; ReloadOverview();
+    void AddTaskSection(string name, List<AgentTask> tasks, Color color, int y, bool actionable, int initialOffset, Action<int> saveOffset) {
+      var section = new PixelPage { Location = new Point(8, y), Size = new Size(592, 102), BackColor = PixelTheme.Paper };
+      section.Paint += delegate(object sender, PaintEventArgs e) { using (var ink = new Pen(PixelTheme.Ink, 3)) e.Graphics.DrawRectangle(ink, 1, 1, section.Width - 3, section.Height - 3); };
+      var header = new Label { Location = new Point(8, 2), Size = new Size(360, 24), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = color, Font = PixelTheme.TitleFont };
+      section.Controls.Add(header);
+      if (actionable && tasks.Count > 0) {
+        var dismissAll = new PixelButton { Text = "清除全部", Danger = true, Location = new Point(470, 2), Size = new Size(88, 24) };
+        dismissAll.Click += delegate {
+          if (PixelDialog.Show(this, "清除当前全部等待状态吗？\n\n同一会话有新的 MCP 或 Agent 事件时会自动恢复监控。", "清除全部等待", PixelDialogButtons.YesNo) == DialogResult.Yes) {
+            TaskCenterState.DismissAll(tasks); overviewSignature = ""; ReloadOverview();
+          }
+        };
+        section.Controls.Add(dismissAll);
+      }
+      var rows = new PixelPage { Location = new Point(4, 27), Size = new Size(562, 70), BackColor = PixelTheme.Paper };
+      var scroll = new PixelScrollBar { Location = new Point(570, 27), Size = new Size(18, 70), AccessibleName = name + "任务滚动条" };
+      scroll.Maximum = Math.Max(0, tasks.Count - TaskRowsPerSection); scroll.LargeChange = TaskRowsPerSection; scroll.Visible = scroll.Maximum > 0;
+      int offset = Math.Max(0, Math.Min(scroll.Maximum, initialOffset)); saveOffset(offset); scroll.Value = offset;
+      Action renderRows = null;
+      renderRows = delegate {
+        PixelTheme.DisposeChildren(rows);
+        offset = scroll.Value; saveOffset(offset);
+        int last = tasks.Count == 0 ? 0 : Math.Min(tasks.Count, offset + TaskRowsPerSection);
+        header.Text = name + "  " + tasks.Count + (tasks.Count > TaskRowsPerSection ? "  ·  " + (offset + 1) + "-" + last + " / " + tasks.Count : "");
+        if (tasks.Count == 0) rows.Controls.Add(PixelTheme.Label(name == "待我处理" ? "当前没有需要处理的任务" : "当前没有正在运行的任务", new Point(8, 8), new Size(540, 46), false));
+        else {
+          int visibleRows = Math.Min(TaskRowsPerSection, tasks.Count - offset);
+          for (int i = 0; i < visibleRows; i++) AddTaskRow(rows, tasks[offset + i], i * 35, actionable, rows.Width);
         }
       };
-      overviewPage.Controls.Add(dismissAll);
+      scroll.ValueChanged += delegate { renderRows(); };
+      MouseEventHandler wheel = delegate(object sender, MouseEventArgs e) { scroll.Value -= Math.Sign(e.Delta); };
+      section.MouseWheel += wheel; rows.MouseWheel += wheel;
+      section.Controls.Add(rows); section.Controls.Add(scroll); overviewPage.Controls.Add(section); renderRows();
     }
 
-    void AddTaskRow(AgentTask task, int y, bool actionable) {
-      var row = new Panel { Location = new Point(14, y), Size = new Size(720, 38), BackColor = PixelTheme.Paper };
+    void AddTaskRow(Control target, AgentTask task, int y, bool actionable, int width) {
+      var row = new Panel { Location = new Point(0, y), Size = new Size(width, 34), BackColor = PixelTheme.Paper };
       Color accent = task.Status == State.Attention ? PixelTheme.Yellow : PixelTheme.Green;
       row.Paint += delegate(object sender, PaintEventArgs e) { using (var shadow = new SolidBrush(PixelTheme.Grid)) e.Graphics.FillRectangle(shadow, 5, 5, row.Width - 5, row.Height - 5); using (var paper = new SolidBrush(PixelTheme.Paper)) e.Graphics.FillRectangle(paper, 1, 1, row.Width - 7, row.Height - 7); using (var ink = new Pen(PixelTheme.Ink, 3)) e.Graphics.DrawRectangle(ink, 1, 1, row.Width - 7, row.Height - 7); using (var bar = new SolidBrush(accent)) e.Graphics.FillRectangle(bar, 6, 7, 6, row.Height - 18); };
-      row.Controls.Add(new Label { Text = task.Source, Location = new Point(18, 3), Size = new Size(82, 28), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = PixelTheme.Ink, Font = PixelTheme.StrongFont });
-      row.Controls.Add(new Label { Text = ProjectName(task), Location = new Point(105, 3), Size = new Size(135, 28), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = PixelTheme.Ink, Font = PixelTheme.StrongFont });
+      row.Controls.Add(new Label { Text = task.Source, Location = new Point(16, 3), Size = new Size(58, 26), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = PixelTheme.Ink, Font = PixelTheme.StrongFont });
+      row.Controls.Add(new Label { Text = ProjectName(task), Location = new Point(76, 3), Size = new Size(92, 26), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = PixelTheme.Ink, Font = PixelTheme.StrongFont });
       string phase = String.IsNullOrWhiteSpace(task.Phase) ? task.Detail : task.Phase; if (task.Progress >= 0) phase += " " + task.Progress + "%";
-      row.Controls.Add(new Label { Text = phase, Location = new Point(245, 3), Size = new Size(180, 28), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = accent, Font = PixelTheme.TextFont });
-      row.Controls.Add(new Label { Text = Duration(Util.Now() - Math.Max(1, task.StartedAt)), Location = new Point(435, 3), Size = new Size(70, 28), AutoSize = false, TextAlign = ContentAlignment.MiddleCenter, BackColor = Color.Transparent, ForeColor = PixelTheme.Ink, Font = PixelTheme.MonoFont });
+      row.Controls.Add(new Label { Text = phase, Location = new Point(172, 3), Size = new Size(actionable ? 142 : 226, 26), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = accent, Font = PixelTheme.TextFont });
+      row.Controls.Add(new Label { Text = Duration(Util.Now() - Math.Max(1, task.StartedAt)), Location = new Point(actionable ? 318 : 402, 3), Size = new Size(58, 26), AutoSize = false, TextAlign = ContentAlignment.MiddleCenter, BackColor = Color.Transparent, ForeColor = PixelTheme.Ink, Font = PixelTheme.MonoFont });
       if (actionable) {
-        var dismiss = new PixelButton { Text = "清除", Danger = true, Location = new Point(520, 3), Size = new Size(70, 28) };
+        var dismiss = new PixelButton { Text = "清除", Danger = true, Location = new Point(382, 3), Size = new Size(70, 26) };
         dismiss.Click += delegate {
           if (PixelDialog.Show(this, "仅清除这条失效等待状态吗？\n\n同一会话有新的 MCP 或 Agent 事件时会自动恢复监控。", "清除等待状态", PixelDialogButtons.YesNo) == DialogResult.Yes) {
             TaskCenterState.Dismiss(task); overviewSignature = ""; ReloadOverview();
           }
         };
         row.Controls.Add(dismiss);
-        var open = new PixelButton { Text = "打开任务", Active = true, Location = new Point(600, 3), Size = new Size(100, 28) }; open.Click += delegate { AgentWindowActivator.Focus(task); }; row.Controls.Add(open);
+        var open = new PixelButton { Text = "打开任务", Active = true, Location = new Point(458, 3), Size = new Size(90, 26) }; open.Click += delegate { AgentWindowActivator.Focus(task); }; row.Controls.Add(open);
       }
-      overviewPage.Controls.Add(row);
+      target.Controls.Add(row);
     }
 
     void BuildMorePage() {
-      morePage.Controls.Add(PixelTheme.Label("当前任务与状态源", new Point(14, 4), new Size(180, 22), true));
-      morePage.Controls.Add(PixelTheme.Label("黄灯置顶；灰色表示状态源可能不可信。", new Point(190, 4), new Size(530, 22), false));
-      diagnostic.Location = new Point(20, 32); diagnostic.Size = new Size(708, 112); diagnostic.BackColor = PixelTheme.Paper; diagnostic.ForeColor = PixelTheme.Ink; diagnostic.Font = PixelTheme.MonoFont; morePage.Controls.Add(diagnostic);
-      morePage.Controls.Add(PixelTheme.Label("状态变化历史", new Point(14, 154), new Size(180, 22), true));
-      morePage.Controls.Add(PixelTheme.Label("仅保存状态与判定来源，不保存聊天正文。", new Point(190, 154), new Size(530, 22), false));
-      content.Location = new Point(20, 182); content.Size = new Size(708, 126); content.BackColor = PixelTheme.Paper; content.ForeColor = PixelTheme.Ink; content.Font = PixelTheme.MonoFont; morePage.Controls.Add(content);
-      var refresh = new PixelButton { Text = "刷新全部", Active = true, Location = new Point(14, 334), Size = new Size(100, 30) }; refresh.Click += delegate { ReloadMore(); }; morePage.Controls.Add(refresh);
-      var copyDiagnostic = new PixelButton { Text = "复制诊断", Location = new Point(126, 334), Size = new Size(100, 30) }; copyDiagnostic.Click += delegate { try { Clipboard.SetText(diagnostic.Text); copyDiagnostic.Text = "已复制"; } catch { copyDiagnostic.Text = "复制失败"; } }; morePage.Controls.Add(copyDiagnostic);
-      var copyHistory = new PixelButton { Text = "复制历史", Location = new Point(238, 334), Size = new Size(100, 30) }; copyHistory.Click += delegate { try { Clipboard.SetText(content.Text); copyHistory.Text = "已复制"; } catch { copyHistory.Text = "复制失败"; } }; morePage.Controls.Add(copyHistory);
-      var clear = new PixelButton { Text = "清空历史", Danger = true, Location = new Point(634, 334), Size = new Size(100, 30) }; clear.Click += delegate { if (PixelDialog.Show(this, "确定清空本机状态变化历史吗？\n\n实时诊断不会被清除。", "清空状态历史", PixelDialogButtons.YesNo) == DialogResult.Yes) { StateHistory.Clear(); ReloadMore(); } }; morePage.Controls.Add(clear);
-      morePage.Paint += delegate(object sender, PaintEventArgs e) { using (var ink = new Pen(PixelTheme.Ink, 3)) { e.Graphics.DrawRectangle(ink, 14, 27, 720, 122); e.Graphics.DrawRectangle(ink, 14, 177, 720, 136); } };
+      morePage.Controls.Add(PixelTheme.Label("当前任务与状态源", new Point(14, 2), new Size(160, 22), true));
+      morePage.Controls.Add(PixelTheme.Label("黄灯置顶；灰色表示状态源可能不可信。", new Point(176, 2), new Size(414, 22), false));
+      diagnostic.Location = new Point(20, 28); diagnostic.Size = new Size(568, 88); diagnostic.BackColor = PixelTheme.Paper; diagnostic.ForeColor = PixelTheme.Ink; diagnostic.Font = PixelTheme.MonoFont; morePage.Controls.Add(diagnostic);
+      morePage.Controls.Add(PixelTheme.Label("状态变化历史", new Point(14, 124), new Size(160, 22), true));
+      morePage.Controls.Add(PixelTheme.Label("仅保存状态与判定来源，不保存聊天正文。", new Point(176, 124), new Size(414, 22), false));
+      content.Location = new Point(20, 150); content.Size = new Size(568, 88); content.BackColor = PixelTheme.Paper; content.ForeColor = PixelTheme.Ink; content.Font = PixelTheme.MonoFont; morePage.Controls.Add(content);
+      var refresh = new PixelButton { Text = "刷新全部", Active = true, Location = new Point(14, 264), Size = new Size(92, 30) }; refresh.Click += delegate { ReloadMore(); }; morePage.Controls.Add(refresh);
+      var copyDiagnostic = new PixelButton { Text = "复制诊断", Location = new Point(116, 264), Size = new Size(92, 30) }; copyDiagnostic.Click += delegate { try { Clipboard.SetText(diagnostic.Text); copyDiagnostic.Text = "已复制"; } catch { copyDiagnostic.Text = "复制失败"; } }; morePage.Controls.Add(copyDiagnostic);
+      var copyHistory = new PixelButton { Text = "复制历史", Location = new Point(218, 264), Size = new Size(92, 30) }; copyHistory.Click += delegate { try { Clipboard.SetText(content.Text); copyHistory.Text = "已复制"; } catch { copyHistory.Text = "复制失败"; } }; morePage.Controls.Add(copyHistory);
+      var clear = new PixelButton { Text = "清空历史", Danger = true, Location = new Point(502, 264), Size = new Size(92, 30) }; clear.Click += delegate { if (PixelDialog.Show(this, "确定清空本机状态变化历史吗？\n\n实时诊断不会被清除。", "清空状态历史", PixelDialogButtons.YesNo) == DialogResult.Yes) { StateHistory.Clear(); ReloadMore(); } }; morePage.Controls.Add(clear);
+      morePage.Paint += delegate(object sender, PaintEventArgs e) { using (var ink = new Pen(PixelTheme.Ink, 3)) { e.Graphics.DrawRectangle(ink, 14, 24, 580, 96); e.Graphics.DrawRectangle(ink, 14, 146, 580, 96); } };
     }
 
     void ReloadMore() {
