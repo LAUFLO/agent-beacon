@@ -86,6 +86,7 @@ namespace AgentTrafficLightNative {
     }
     public static bool IsTraeMcpRecent(long seen, long now) { return seen > 0 && now >= seen && now - seen <= 10 * 60 * 1000; }
     public static bool IsTraeMcpReadyAndConnected() { return IsTraeMcpPrepared() && IsTraeMcpConnected(); }
+    static bool HasTraeMcpArtifacts() { return File.Exists(TraeMcpExecutable) || File.Exists(TraeMcpPendingExecutable) || File.Exists(TraeMcpConfigPath) || File.Exists(LegacyTraeMcpExecutable); }
     public static string TraeMcpStatus() {
       if (IsTraeMcpUpdatePending()) return "■ 关闭 TRAE 后重启灯，完成 MCP 更新";
       if (File.Exists(TraeMcpExecutable) && !IsTraeMcpConfigCurrent()) return "■ 需重新配置 TRAE MCP";
@@ -93,6 +94,35 @@ namespace AgentTrafficLightNative {
       long seen = TraeMcpLastSeen(); string time = seen > 0 ? DateTimeOffset.FromUnixTimeMilliseconds(seen).ToLocalTime().ToString("HH:mm") : "";
       if (IsTraeMcpConnected()) return "■ 最近通信" + (time.Length > 0 ? " " + time : "");
       return seen > 0 ? "■ 已失联 " + time : "■ 已配置，待通信";
+    }
+    public static string HealthSummary() {
+      var rows = new List<string>();
+      rows.Add("TRAE: " + (HasTraeMcpArtifacts() ? (IsTraeMcpPrepared() ? (IsTraeMcpConnected() ? "正常" : "配置正常，当前未通信") : "需要修复") : "未配置"));
+      rows.Add("Claude Code: " + (IsClaudeInstalled() ? "正常" : "未配置"));
+      rows.Add("OpenCode: " + (IsOpenCodeInstalled() ? "正常" : "未配置"));
+      return String.Join(Environment.NewLine, rows.ToArray());
+    }
+    public static string RepairConfiguredIntegrations() {
+      var rows = new List<string>(); bool changed = false;
+      if (HasTraeMcpArtifacts()) {
+        try {
+          string update = EnsureTraeMcpHelper(true);
+          if (!IsTraeMcpConfigCurrent()) { InstallTraeMcp(); changed = true; rows.Add("TRAE: 已刷新 Helper，并复制新版 MCP 配置"); }
+          else { changed = changed || update == "updated" || update == "pending"; rows.Add("TRAE: " + (update == "pending" ? "关闭 TRAE 后重启 Agent Beacon 完成替换" : "Helper 与固定配置正常")); }
+        } catch (Exception ex) { rows.Add("TRAE: 修复失败 - " + ex.Message); }
+      } else rows.Add("TRAE: 未配置，已跳过");
+
+      string claudeSettings = Path.Combine(Util.Home, ".claude", "settings.json");
+      if (File.Exists(claudeSettings) || File.Exists(Path.Combine(Util.IntegrationDir, "claude-hook.cjs"))) {
+        string result = InstallClaude(); bool ok = IsClaudeInstalled(); changed = changed || ok; rows.Add("Claude Code: " + (ok ? "Hooks 已检查并修复" : result));
+      } else rows.Add("Claude Code: 未配置，已跳过");
+
+      string openCodePlugin = Path.Combine(Util.Home, ".config", "opencode", "plugins", "agent-traffic-light.js");
+      if (File.Exists(openCodePlugin)) {
+        string result = InstallOpenCode(); bool ok = IsOpenCodeInstalled(); changed = changed || ok; rows.Add("OpenCode: " + (ok ? "插件已刷新" : result));
+      } else rows.Add("OpenCode: 未配置，已跳过");
+
+      return "集成健康检查完成" + (changed ? "，已自动修复可处理的问题。" : "，未发现需要自动修复的问题。") + Environment.NewLine + Environment.NewLine + String.Join(Environment.NewLine, rows.ToArray());
     }
     public static string InstallTraeMcp() {
       try {

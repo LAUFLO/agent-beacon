@@ -117,7 +117,7 @@ namespace AgentTrafficLightNative {
     readonly PixelLogBox diagnostic = new PixelLogBox(), content = new PixelLogBox(); bool dragging; Point dragOrigin;
     public HistoryForm() {
       Text = "Agent Beacon 状态中心"; Icon = PixelTheme.AppIcon; ClientSize = new Size(700, 520); StartPosition = FormStartPosition.CenterParent; FormBorderStyle = FormBorderStyle.None; MaximizeBox = false; MinimizeBox = false;
-      ShowInTaskbar = Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") == "1"; BackColor = PixelTheme.Paper; ForeColor = PixelTheme.Ink; Font = PixelTheme.TextFont; DoubleBuffered = true;
+      ShowInTaskbar = Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") == "1"; BackColor = PixelTheme.Paper; ForeColor = PixelTheme.Ink; Font = PixelTheme.TextFont; AutoScaleMode = AutoScaleMode.Dpi; DoubleBuffered = true;
       var title = PixelTheme.Label("AGENT BEACON // 状态中心", new Point(60, 8), new Size(550, 32), true); Controls.Add(title);
       var close = new PixelButton { Text = "X", Danger = true, Location = new Point(659, 9), Size = new Size(28, 27) }; close.Click += delegate { Close(); }; Controls.Add(close);
       Controls.Add(PixelTheme.Label("实时状态诊断", new Point(24, 58), new Size(200, 24), true));
@@ -131,7 +131,7 @@ namespace AgentTrafficLightNative {
       var copyHistory = new PixelButton { Text = "复制历史", Location = new Point(272, 462), Size = new Size(108, 34) }; copyHistory.Click += delegate { try { Clipboard.SetText(content.Text); copyHistory.Text = "已复制"; } catch { copyHistory.Text = "复制失败"; } }; Controls.Add(copyHistory);
       var clear = new PixelButton { Text = "清空历史", Danger = true, Location = new Point(568, 462), Size = new Size(108, 34) }; clear.Click += delegate { if (PixelDialog.Show(this, "确定清空本机状态变化历史吗？\n\n实时诊断不会被清除。", "清空状态历史", PixelDialogButtons.YesNo) == DialogResult.Yes) { StateHistory.Clear(); Reload(); } }; Controls.Add(clear);
       MouseDown += BeginDrag; MouseMove += ContinueDrag; MouseUp += EndDrag; title.MouseDown += BeginDrag; title.MouseMove += ContinueDrag; title.MouseUp += EndDrag;
-      Shown += delegate { Reload(); };
+      Shown += delegate { DpiSupport.KeepOnScreen(this); Reload(); };
     }
     void Reload() {
       diagnostic.Text = DiagnosticsHub.Report();

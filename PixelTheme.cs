@@ -57,6 +57,54 @@ namespace AgentTrafficLightNative {
     }
   }
 
+  sealed class PixelButton : Control {
+    bool hover, pressed, active, danger;
+    public bool Active { get { return active; } set { active = value; Invalidate(); } }
+    public bool Danger { get { return danger; } set { danger = value; Invalidate(); } }
+    public PixelButton() {
+      SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.Selectable, true);
+      Cursor = Cursors.Hand; TabStop = true; Font = PixelTheme.StrongFont; ForeColor = PixelTheme.Ink; BackColor = PixelTheme.Paper;
+    }
+    protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { hover = pressed = false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnMouseDown(MouseEventArgs e) { if (e.Button == MouseButtons.Left) { pressed = true; Focus(); Invalidate(); } base.OnMouseDown(e); }
+    protected override void OnMouseUp(MouseEventArgs e) { pressed = false; Invalidate(); base.OnMouseUp(e); }
+    protected override void OnKeyDown(KeyEventArgs e) { if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter) { OnClick(EventArgs.Empty); e.Handled = true; } base.OnKeyDown(e); }
+    protected override void OnPaint(PaintEventArgs e) {
+      Graphics g = e.Graphics; g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
+      Color fill = pressed ? PixelTheme.Grid : active ? PixelTheme.PaleGreen : danger && hover ? PixelTheme.PaleRed : hover ? PixelTheme.PaleBlue : PixelTheme.Paper;
+      g.Clear(Parent == null ? PixelTheme.Paper : Parent.BackColor);
+      using (var shadow = new SolidBrush(PixelTheme.Grid)) g.FillRectangle(shadow, 4, 4, Width - 4, Height - 4);
+      using (var black = new SolidBrush(PixelTheme.Ink)) g.FillRectangle(black, 0, 0, Width - 4, Height - 4);
+      using (var body = new SolidBrush(fill)) g.FillRectangle(body, 3, 3, Width - 10, Height - 10);
+      if (active) using (var mark = new SolidBrush(PixelTheme.Green)) g.FillRectangle(mark, 6, 6, 5, Height - 16);
+      if (danger && hover) using (var mark = new SolidBrush(PixelTheme.Red)) g.FillRectangle(mark, 6, 6, 5, Height - 16);
+      TextRenderer.DrawText(g, Text, Font, new Rectangle(5, 2, Width - 14, Height - 10), ForeColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+      if (Focused) using (var focus = new Pen(PixelTheme.Blue, 2)) g.DrawRectangle(focus, 5, 5, Width - 15, Height - 15);
+    }
+  }
+
+  sealed class PixelToggle : Control {
+    bool isChecked, hover;
+    public bool Checked { get { return isChecked; } set { if (isChecked == value) return; isChecked = value; Invalidate(); if (CheckedChanged != null) CheckedChanged(this, EventArgs.Empty); } }
+    public event EventHandler CheckedChanged;
+    public PixelToggle() { SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.Selectable, true); Cursor = Cursors.Hand; TabStop = true; Height = 24; Font = PixelTheme.TextFont; ForeColor = PixelTheme.Ink; BackColor = PixelTheme.Paper; }
+    protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { hover = false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnClick(EventArgs e) { Checked = !Checked; base.OnClick(e); }
+    protected override void OnKeyDown(KeyEventArgs e) { if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter) { Checked = !Checked; e.Handled = true; } base.OnKeyDown(e); }
+    protected override void OnPaint(PaintEventArgs e) {
+      Graphics g = e.Graphics; g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
+      g.Clear(Parent == null ? PixelTheme.Paper : Parent.BackColor);
+      using (var shadow = new SolidBrush(PixelTheme.Grid)) g.FillRectangle(shadow, 3, 6, 18, 18);
+      using (var outer = new SolidBrush(hover ? PixelTheme.Blue : PixelTheme.Ink)) g.FillRectangle(outer, 0, 3, 19, 19);
+      using (var well = new SolidBrush(PixelTheme.Paper)) g.FillRectangle(well, 3, 6, 13, 13);
+      if (Checked) using (var on = new SolidBrush(PixelTheme.Green)) { g.FillRectangle(on, 6, 9, 7, 7); g.FillRectangle(on, 8, 7, 3, 11); }
+      TextRenderer.DrawText(g, Text, Font, new Rectangle(28, 0, Width - 28, Height), ForeColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+      if (Focused) using (var focus = new Pen(PixelTheme.Blue, 2)) g.DrawRectangle(focus, 25, 2, Width - 27, Height - 5);
+    }
+  }
+
   sealed class PixelMenuRenderer : ToolStripProfessionalRenderer {
     protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e) { e.Graphics.Clear(PixelTheme.Paper); }
     protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e) { using (var pen = new Pen(PixelTheme.Ink, 3)) e.Graphics.DrawRectangle(pen, 1, 1, e.ToolStrip.Width - 3, e.ToolStrip.Height - 3); }
@@ -76,7 +124,7 @@ namespace AgentTrafficLightNative {
     PixelDialog(string message, string title, PixelDialogButtons options) {
       buttons = options; spacious = (message ?? "").Length > 90 || (message ?? "").Split('\n').Length > 2; int width = spacious ? 500 : 400, height = spacious ? 230 : 152;
       Text = title; Icon = PixelTheme.AppIcon; ClientSize = new Size(width, height); FormBorderStyle = FormBorderStyle.None; MaximizeBox = false; MinimizeBox = false;
-      ShowInTaskbar = Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") == "1"; StartPosition = FormStartPosition.CenterParent; BackColor = PixelTheme.Paper; ForeColor = PixelTheme.Ink; Font = PixelTheme.TextFont; DoubleBuffered = true; KeyPreview = true;
+      ShowInTaskbar = Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") == "1"; StartPosition = FormStartPosition.CenterParent; BackColor = PixelTheme.Paper; ForeColor = PixelTheme.Ink; Font = PixelTheme.TextFont; AutoScaleMode = AutoScaleMode.Dpi; DoubleBuffered = true; KeyPreview = true;
       var heading = PixelTheme.Label(String.IsNullOrWhiteSpace(title) ? "AGENT BEACON" : title.ToUpperInvariant(), new Point(60, 8), new Size(width - 120, 32), true); Controls.Add(heading);
       var close = new PixelButton { Text = "X", Danger = true, Location = new Point(width - 44, 9), Size = new Size(31, 29) }; close.Click += delegate { DialogResult = options == PixelDialogButtons.YesNo ? DialogResult.No : DialogResult.OK; Close(); }; Controls.Add(close);
       if (spacious) {
@@ -91,7 +139,7 @@ namespace AgentTrafficLightNative {
       } else {
         var ok = new PixelButton { Text = "确定", Active = true, Location = new Point(width - 118, buttonY), Size = new Size(96, 34) }; ok.Click += delegate { DialogResult = DialogResult.OK; Close(); }; Controls.Add(ok);
       }
-      MouseDown += BeginDrag; MouseMove += ContinueDrag; MouseUp += EndDrag; heading.MouseDown += BeginDrag; heading.MouseMove += ContinueDrag; heading.MouseUp += EndDrag;
+      MouseDown += BeginDrag; MouseMove += ContinueDrag; MouseUp += EndDrag; heading.MouseDown += BeginDrag; heading.MouseMove += ContinueDrag; heading.MouseUp += EndDrag; Shown += delegate { DpiSupport.KeepOnScreen(this); };
     }
 
     public static DialogResult Show(IWin32Window owner, string message, string title, PixelDialogButtons buttons) { using (var dialog = new PixelDialog(message, title, buttons)) return owner == null ? dialog.ShowDialog() : dialog.ShowDialog(owner); }
@@ -121,14 +169,14 @@ namespace AgentTrafficLightNative {
     readonly PixelProgressBar progress = new PixelProgressBar(); readonly Label status, percent; bool allowClose, dragging; Point dragOrigin;
     public PixelProgressForm(string title, bool preview) {
       Text = title; Icon = PixelTheme.AppIcon; ClientSize = new Size(440, 170); FormBorderStyle = FormBorderStyle.None; MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") == "1";
-      StartPosition = FormStartPosition.CenterParent; BackColor = PixelTheme.Paper; ForeColor = PixelTheme.Ink; Font = PixelTheme.TextFont; DoubleBuffered = true;
+      StartPosition = FormStartPosition.CenterParent; BackColor = PixelTheme.Paper; ForeColor = PixelTheme.Ink; Font = PixelTheme.TextFont; AutoScaleMode = AutoScaleMode.Dpi; DoubleBuffered = true;
       var heading = PixelTheme.Label(String.IsNullOrWhiteSpace(title) ? "自动更新" : title, new Point(60, 8), new Size(320, 32), true); Controls.Add(heading);
       if (preview) { allowClose = true; var close = new PixelButton { Text = "X", Danger = true, Location = new Point(396, 9), Size = new Size(31, 29) }; close.Click += delegate { Close(); }; Controls.Add(close); }
       status = PixelTheme.Label("准备下载…", new Point(24, 55), new Size(392, 28), true); Controls.Add(status);
       progress.Location = new Point(28, 88); progress.Size = new Size(384, 34); Controls.Add(progress);
       percent = PixelTheme.Label("0%", new Point(24, 128), new Size(392, 24), true); Controls.Add(percent);
       MouseDown += BeginDrag; MouseMove += ContinueDrag; MouseUp += EndDrag; heading.MouseDown += BeginDrag; heading.MouseMove += ContinueDrag; heading.MouseUp += EndDrag;
-      FormClosing += delegate(object sender, FormClosingEventArgs e) { if (!allowClose && e.CloseReason == CloseReason.UserClosing) e.Cancel = true; };
+      FormClosing += delegate(object sender, FormClosingEventArgs e) { if (!allowClose && e.CloseReason == CloseReason.UserClosing) e.Cancel = true; }; Shown += delegate { DpiSupport.KeepOnScreen(this); };
     }
     public void Report(int value, string message) { if (IsDisposed) return; if (InvokeRequired) { try { BeginInvoke(new Action<int, string>(Report), value, message); } catch { } return; } progress.Value = value; status.Text = String.IsNullOrWhiteSpace(message) ? "正在更新…" : message; percent.Text = value + "%"; }
     public void Complete() { if (IsDisposed) return; if (InvokeRequired) { try { BeginInvoke(new Action(Complete)); } catch { } return; } allowClose = true; Close(); }

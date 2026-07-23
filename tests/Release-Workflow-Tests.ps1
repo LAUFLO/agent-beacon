@@ -7,7 +7,7 @@ $workflow = Get-Content -LiteralPath $workflowPath -Encoding UTF8 -Raw
 $build = Get-Content -LiteralPath $buildPath -Encoding UTF8 -Raw
 $publish = Get-Content -LiteralPath $publishPath -Encoding UTF8 -Raw
 
-foreach ($required in @('workflow_dispatch:','commit_sha:','ref: main','Replay-State-Tests.ps1','Mcp-Protocol-Tests.ps1','integration-event-tests.mjs','Release-Workflow-Tests.ps1','Ui-Style-Tests.ps1','actions/upload-artifact@v4','Prepare release notes with package hash','Get-FileHash','steps.notes.outputs.file','Create tag, release, and upload EXE','--target','$env:GITHUB_SHA')) {
+foreach ($required in @('workflow_dispatch:','commit_sha:','ref: main','Replay-State-Tests.ps1','Mcp-Protocol-Tests.ps1','integration-event-tests.mjs','Release-Workflow-Tests.ps1','Ui-Style-Tests.ps1','Reproducible-Build-Tests.ps1','actions/checkout@v6','actions/upload-artifact@v6','Prepare release notes with package hash','Get-FileHash','steps.notes.outputs.file','Create tag, release, and upload EXE','--target','$env:GITHUB_SHA')) {
   if (-not $workflow.Contains($required)) { throw "Release workflow is missing: $required" }
 }
 if ($workflow -notmatch '\$tagCheckExitCode = \$LASTEXITCODE' -or $workflow -notmatch '\$global:LASTEXITCODE = 0') { throw 'Release workflow does not safely handle the expected missing-tag exit code.' }
@@ -20,8 +20,8 @@ foreach ($required in @('Invoke-Git add -A','git merge --no-ff','Invoke-Git push
 if ($publish -notmatch 'git config --get user\.name' -or $publish -notmatch 'users\.noreply\.github\.com') { throw 'Local publish script does not prevent missing Git author identity.' }
 if ($publish -notmatch '\[IO\.Path\]::GetFullPath' -or $publish -notmatch '\[StringComparison\]::OrdinalIgnoreCase') { throw 'Local publish script does not normalize Windows repository paths.' }
 if ($publish -notmatch '\$gitArguments = @\(\$args\)' -or $publish -match 'ValueFromRemainingArguments') { throw 'Local publish script does not safely forward git flags such as -A.' }
-if ($build -notmatch 'Select-String.+AppInfo\.cs' -or $build -notmatch 'Get-FileHash.+SHA256' -or $build -notmatch 'Agent-Beacon-\$version\.sha256') { throw 'Build script does not derive the version and emit SHA-256.' }
-foreach ($module in @('AppInfo.cs','PixelTheme.cs','StateHistory.cs','DesktopFeatures.cs','UpdateService.cs','AgentUi.cs','Integrations.cs')) {
+if ($build -notmatch 'Select-String.+AppInfo\.cs' -or $build -notmatch 'Get-FileHash.+SHA256' -or $build -notmatch 'Agent-Beacon-\$version\.sha256' -or $build -notmatch '/deterministic\+' -or $build -notmatch 'Agent-Beacon-Setup-\$version\.exe' -or $build -notmatch 'Agent-Beacon-Portable-\$version\.zip') { throw 'Build script does not produce deterministic portable and installer packages.' }
+foreach ($module in @('AppInfo.cs','PixelTheme.cs','DpiSupport.cs','StateHistory.cs','UsageStatistics.cs','DesktopFeatures.cs','UpdateService.cs','AgentUi.cs','Integrations.cs','CodexEventCompatibility.cs')) {
   if (-not (Test-Path -LiteralPath (Join-Path $root $module))) { throw "Modular source file is missing: $module" }
 }
 Write-Host 'PASS one-command local merge and automatic GitHub tag/release workflow'

@@ -6,6 +6,19 @@ using System.Text;
 using System.Windows.Forms;
 
 namespace AgentTrafficLightNative {
+  static class AdaptiveScanPolicy {
+    public static int Interval(SettingsData settings, List<AgentTask> agents) {
+      int baseline = settings == null ? 1500 : Math.Max(800, Math.Min(30000, settings.RefreshMs));
+      if (settings != null && !settings.AdaptiveScanning) return baseline;
+      bool any = agents != null && agents.Count > 0;
+      bool attention = any && agents.Exists(delegate(AgentTask task) { return task != null && task.Status == State.Attention; });
+      bool running = any && agents.Exists(delegate(AgentTask task) { return task != null && task.Status == State.Running; });
+      if (attention) return Math.Min(baseline, 800);
+      if (running) return Math.Min(baseline, 1500);
+      return Math.Max(baseline, any ? 5000 : 10000);
+    }
+  }
+
   static class NotificationPolicy {
     public static readonly string[] Sources = { "TRAE", "Codex", "Claude Code", "OpenCode" };
     public static bool AgentEnabled(SettingsData settings, string source) {
@@ -21,8 +34,15 @@ namespace AgentTrafficLightNative {
       if (!settings.QuietHoursEnabled) return false; int hour = now.Hour, start = Math.Max(0, Math.Min(23, settings.QuietStartHour)), end = Math.Max(0, Math.Min(23, settings.QuietEndHour));
       return start == end || (start < end ? hour >= start && hour < end : hour >= start || hour < end);
     }
+    public static bool CanNotify(SettingsData settings, string source) {
+      return settings != null && settings.NotificationsEnabled && AgentEnabled(settings, source) && !IsQuiet(settings, DateTime.Now);
+    }
+    public static long AttentionDelayMs(SettingsData settings) { return Math.Max(0, settings == null ? 0 : settings.AttentionNotifyDelaySeconds) * 1000L; }
+    public static bool ShouldRemindLongRunning(SettingsData settings, AgentTask task, long now) {
+      return settings != null && task != null && task.Status == State.Running && settings.LongRunningReminderMinutes > 0 && task.StartedAt > 0 && now - task.StartedAt >= settings.LongRunningReminderMinutes * 60000L && CanNotify(settings, task.Source);
+    }
     public static bool ShouldNotify(SettingsData settings, AgentTask task) {
-      if (!settings.NotificationsEnabled || task == null || !AgentEnabled(settings, task.Source) || IsQuiet(settings, DateTime.Now)) return false;
+      if (task == null || !CanNotify(settings, task.Source)) return false;
       return (task.Status == State.Attention && settings.NotifyAttention) || (task.Status == State.Complete && settings.NotifyComplete);
     }
   }

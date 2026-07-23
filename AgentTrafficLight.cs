@@ -23,7 +23,7 @@ namespace AgentTrafficLightNative {
   }
 
   sealed class AgentTask {
-    public string Id, Source, SessionId, Title, Status, Detail, Evidence;
+    public string Id, Source, SessionId, Title, Status, Detail, Evidence, InteractionId;
     public long StartedAt, UpdatedAt;
     public bool ExplicitStart, ReliableStart, PendingExec;
   }
@@ -39,7 +39,8 @@ namespace AgentTrafficLightNative {
     public List<AgentTask> Tasks;
     public AgentRuntimeSnapshot Runtime;
     public int FilesRead;
-    public long DurationMs;
+    public long DurationMs, PrivateMemoryMb;
+    public int EffectiveIntervalMs;
     public bool CodexUiAttention;
     public string Error;
   }
@@ -70,12 +71,15 @@ namespace AgentTrafficLightNative {
     public int QuietStartHour = 22;
     public int QuietEndHour = 8;
     public string NotificationAgents = "TRAE|Codex|Claude Code|OpenCode";
+    public bool AdaptiveScanning = true;
+    public int AttentionNotifyDelaySeconds = 0;
+    public int LongRunningReminderMinutes = 0;
   }
 
   static class DiagnosticsHub {
     static readonly object Sync = new object();
     static readonly Dictionary<string, string> Lines = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-    static long lastScanAt, lastDuration, lastPersistAt; static int lastFiles; static string lastError = "", lastStateSignature = "", lastPersisted = "";
+    static long lastScanAt, lastDuration, lastMemoryMb, lastPersistAt; static int lastFiles, lastInterval; static string lastError = "", lastStateSignature = "", lastPersisted = "";
     static readonly string FilePath = DiagnosticPath();
     static string DiagnosticPath() { string configured = Environment.GetEnvironmentVariable("AGENT_BEACON_DIAGNOSTICS_PATH"); return String.IsNullOrWhiteSpace(configured) ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentTrafficLight", "diagnostics.txt") : configured; }
 
@@ -88,7 +92,7 @@ namespace AgentTrafficLightNative {
           Lines[task.Source] = String.Format("{0}: {1} · {2} · {3} · {4}", task.Source, state, task.Detail ?? "", task.Evidence ?? "未知来源", at);
           signature.Append(task.Source).Append(':').Append(task.Status).Append(':').Append(task.Detail).Append(':').Append(task.Evidence).Append('|');
         }
-        lastScanAt = Util.Now(); lastDuration = cycle == null ? 0 : cycle.DurationMs; lastFiles = cycle == null ? 0 : cycle.FilesRead; lastError = cycle == null ? "" : (cycle.Error ?? "");
+        lastScanAt = Util.Now(); lastDuration = cycle == null ? 0 : cycle.DurationMs; lastMemoryMb = cycle == null ? 0 : cycle.PrivateMemoryMb; lastFiles = cycle == null ? 0 : cycle.FilesRead; lastInterval = cycle == null ? 0 : cycle.EffectiveIntervalMs; lastError = cycle == null ? "" : (cycle.Error ?? "");
         string next = signature.ToString(); bool changed = next != lastStateSignature; lastStateSignature = next; Persist(changed);
       }
     }
@@ -102,7 +106,7 @@ namespace AgentTrafficLightNative {
     public static string Report() {
       lock (Sync) {
         string at = lastScanAt > 0 ? DateTimeOffset.FromUnixTimeMilliseconds(lastScanAt).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "--";
-        return "Agent Beacon " + AppInfo.Version + " 诊断（不包含聊天正文）" + Environment.NewLine + "扫描: " + at + " · " + lastDuration + "ms · 读取 " + lastFiles + " 个变化文件" + (String.IsNullOrWhiteSpace(lastError) ? "" : Environment.NewLine + "错误: " + lastError) + Environment.NewLine + Summary();
+        return "Agent Beacon " + AppInfo.Version + " 诊断（不包含聊天正文）" + Environment.NewLine + "扫描: " + at + " · " + lastDuration + "ms · 读取 " + lastFiles + " 个变化文件 · 间隔 " + lastInterval + "ms · 内存 " + lastMemoryMb + "MB" + (String.IsNullOrWhiteSpace(lastError) ? "" : Environment.NewLine + "错误: " + lastError) + Environment.NewLine + Summary();
       }
     }
     static void Persist(bool force) { try { long now = Util.Now(); if (!force && lastPersistAt != 0 && now - lastPersistAt < 30000) return; string report = Report(); if (report == lastPersisted && !force) return; Directory.CreateDirectory(Path.GetDirectoryName(FilePath)); File.WriteAllText(FilePath, report, new UTF8Encoding(false)); lastPersisted = report; lastPersistAt = now; } catch { } }
@@ -284,29 +288,24 @@ namespace AgentTrafficLightNative {
       if (type == "event_msg" && ptype == "user_message") task.Title = Util.Clean(Util.S(payload, "message", ""), task.Title);
       else if (type == "event_msg" && ptype == "task_complete") { task.Status = State.Complete; task.Detail = "任务已结束"; task.PendingExec = false; state.PendingAttentionCalls.Clear(); state.PendingExecCalls.Clear(); state.Current = null; }
       else if (type == "event_msg" && ptype == "turn_aborted") { task.Status = State.Complete; task.Detail = "任务已中断"; task.PendingExec = false; state.PendingAttentionCalls.Clear(); state.PendingExecCalls.Clear(); state.Current = null; }
-      else if (type == "response_item" && (ptype == "custom_tool_call" || ptype == "function_call")) {
-        string name = Util.S(payload, "name", ""), input = Util.S(payload, "input", Util.S(payload, "arguments", ""));
-        string callId = Util.S(payload, "call_id", Util.S(payload, "id", "")); callId = String.IsNullOrWhiteSpace(callId) ? "*" : callId;
-        bool execCall = IsCodexExecCall(name);
+      else if (type == "response_item" && CodexEventCompatibility.IsToolCall(ptype)) {
+        string name = Util.S(payload, "name", ""), input = CodexEventCompatibility.Input(payload);
+        string callId = CodexEventCompatibility.CallId(payload);
+        bool execCall = CodexEventCompatibility.IsExec(name);
         if (execCall) { state.PendingExecCalls.Add(callId); task.PendingExec = true; }
-        bool explicitRequest = Regex.IsMatch(name, "^(?:request_permissions?|request_user_input|elicitation|approval(?:_request)?)$", RegexOptions.IgnoreCase)
-          || Regex.IsMatch(input, @"tools\s*\.\s*(?:request_permissions?|request_user_input|elicitation|approval(?:_request)?)\s*\(", RegexOptions.IgnoreCase)
+        bool explicitRequest = CodexEventCompatibility.IsExplicitInteraction(name, input)
+          || CodexEventCompatibility.IsComputerUseAction(name, input)
           || (execCall && CodexInputRequiresEscalation(input));
         if (explicitRequest) {
-          state.PendingAttentionCalls.Add(callId);
+          state.PendingAttentionCalls.Add(callId); task.InteractionId = callId;
           RefreshCodexPendingAttention(state);
         }
-      } else if (type == "response_item" && (ptype == "custom_tool_call_output" || ptype == "function_call_output")) {
-        string callId = Util.S(payload, "call_id", Util.S(payload, "id", ""));
+      } else if (type == "response_item" && CodexEventCompatibility.IsToolOutput(ptype)) {
+        string callId = CodexEventCompatibility.CallId(payload); if (callId == "*") callId = "";
         state.PendingExecCalls.Remove("*"); if (!String.IsNullOrWhiteSpace(callId)) state.PendingExecCalls.Remove(callId); task.PendingExec = state.PendingExecCalls.Count > 0;
         bool resolved = state.PendingAttentionCalls.Remove("*"); if (!String.IsNullOrWhiteSpace(callId)) resolved = state.PendingAttentionCalls.Remove(callId) || resolved;
-        if (resolved) { RefreshCodexPendingAttention(state); if (task.Status == State.Running) task.Detail = "已确认，继续执行"; }
+        if (resolved) { if (state.PendingAttentionCalls.Count == 0) task.InteractionId = ""; RefreshCodexPendingAttention(state); if (task.Status == State.Running) task.Detail = "已确认，继续执行"; }
       }
-    }
-
-    static bool IsCodexExecCall(string name) {
-      return String.Equals(name, "exec", StringComparison.OrdinalIgnoreCase)
-        || String.Equals(name, "exec_command", StringComparison.OrdinalIgnoreCase);
     }
 
     static bool CodexInputRequiresEscalation(string input) {
@@ -576,7 +575,7 @@ namespace AgentTrafficLightNative {
       return Clone(candidate);
     }
     public static AgentTask Idle(string source) { long now = Util.Now(); return new AgentTask { Id = "idle:" + source, Source = source, SessionId = "", Title = source, Status = State.Complete, Detail = "Agent 已启动，等待新任务", Evidence = "进程检测 · 未发现本次启动后的任务事件", StartedAt = now, UpdatedAt = now }; }
-    public static AgentTask Clone(AgentTask task) { return task == null ? null : new AgentTask { Id = task.Id, Source = task.Source, SessionId = task.SessionId, Title = task.Title, Status = task.Status, Detail = task.Detail, Evidence = task.Evidence, StartedAt = task.StartedAt, UpdatedAt = task.UpdatedAt, ExplicitStart = task.ExplicitStart, ReliableStart = task.ReliableStart, PendingExec = task.PendingExec }; }
+    public static AgentTask Clone(AgentTask task) { return task == null ? null : new AgentTask { Id = task.Id, Source = task.Source, SessionId = task.SessionId, Title = task.Title, Status = task.Status, Detail = task.Detail, Evidence = task.Evidence, InteractionId = task.InteractionId, StartedAt = task.StartedAt, UpdatedAt = task.UpdatedAt, ExplicitStart = task.ExplicitStart, ReliableStart = task.ReliableStart, PendingExec = task.PendingExec }; }
   }
 
 
@@ -612,7 +611,7 @@ namespace AgentTrafficLightNative {
     static void StopPreviousVersions() { foreach (string name in PreviousExitEvents) try { EventWaitHandle.OpenExisting(name).Set(); } catch { } }
 
     [STAThread] public static void Main(string[] args) {
-      Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
+      DpiSupport.Enable(); Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
       if (Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") == "1" && Array.IndexOf(args, "--progress-preview") >= 0) { using (var preview = new PixelProgressForm("自动更新 v1.5.0", true)) { preview.Shown += delegate { preview.Report(64, "正在下载…"); }; Application.Run(preview); } return; }
       if (Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") == "1" && Array.IndexOf(args, "--update-confirm-preview") >= 0) { PixelDialog.Show(null, "发现 v1.5.0，是否立即更新？", "发现新版本", PixelDialogButtons.YesNo); return; }
       if (Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") == "1" && Array.IndexOf(args, "--history-preview") >= 0) { using (var preview = new HistoryForm()) Application.Run(preview); return; }

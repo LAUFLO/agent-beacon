@@ -3,3 +3,4 @@
 /Agent-Beacon-*.sha256
 /integrations/Agent-Beacon-MCP.exe
 /artifacts/
+/tools/.cache/

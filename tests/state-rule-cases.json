@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "description": "Privacy-safe replay library. Fixtures contain synthetic or anonymized event structures only.",
+  "cases": [
+    {
+      "name": "Codex legacy interaction lifecycle",
+      "source": "Codex",
+      "eventFormat": "custom_tool_call",
+      "fixtures": [
+        "codex-01-running.jsonl",
+        "codex-02-attention.jsonl",
+        "codex-03-complete.jsonl",
+        "codex-04-running.jsonl"
+      ],
+      "expected": ["running", "attention", "complete", "running"]
+    },
+    {
+      "name": "Codex non-approval edit lifecycle",
+      "source": "Codex",
+      "eventFormat": "custom_tool_call/exec",
+      "fixtures": [
+        "codex-edit-01-running.jsonl",
+        "codex-edit-02-attention.jsonl",
+        "codex-edit-03-running-after-approval.jsonl",
+        "codex-edit-04-complete.jsonl"
+      ],
+      "expected": ["running", "running", "running", "complete"]
+    },
+    {
+      "name": "Codex current terminal approval lifecycle",
+      "source": "Codex",
+      "eventFormat": "function_call/exec_command",
+      "fixtures": [
+        "codex-escalation-01-running.jsonl",
+        "codex-escalation-02-attention.jsonl",
+        "codex-escalation-03-running-after-approval.jsonl",
+        "codex-escalation-04-complete.jsonl"
+      ],
+      "expected": ["running", "attention", "running", "complete"]
+    },
+    {
+      "name": "Codex Computer Use permission lifecycle",
+      "source": "Codex",
+      "eventFormat": "function_call/js+sky.launch_app",
+      "fixtures": [
+        "codex-computer-use-01-running.jsonl",
+        "codex-computer-use-02-attention.jsonl",
+        "codex-computer-use-03-running-after-approval.jsonl",
+        "codex-computer-use-04-complete.jsonl"
+      ],
+      "expected": ["running", "attention", "running", "complete"]
+    },
+    {
+      "name": "Claude Code hook lifecycle",
+      "source": "Claude Code",
+      "eventFormat": "hook-jsonl",
+      "fixtures": [
+        "claude-transcript-01-running.jsonl",
+        "claude-transcript-02-attention.jsonl",
+        "claude-transcript-03-complete.jsonl",
+        "claude-transcript-04-running.jsonl"
+      ],
+      "expected": ["running", "attention", "complete", "running"]
+    },
+    {
+      "name": "OpenCode plugin lifecycle",
+      "source": "OpenCode",
+      "eventFormat": "bridge-json",
+      "fixtures": [
+        "opencode-01-running.json",
+        "opencode-02-attention.json",
+        "opencode-03-complete.json",
+        "opencode-04-running.json"
+      ],
+      "expected": ["running", "attention", "complete", "running"]
+    }
+  ]
+}

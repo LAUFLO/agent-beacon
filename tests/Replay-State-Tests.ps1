@@ -9,7 +9,7 @@ $openTarget = Join-Path $bridge 'opencode-replay.json'
 New-Item -ItemType Directory -Force -Path (Split-Path $codexTarget), (Split-Path $claudeTarget), $bridge | Out-Null
 $dll = Join-Path $work 'AgentTrafficLight.Tests.dll'
 $mcpExe = Join-Path $work 'Agent-Beacon-MCP.exe'
-$appSources = @('AppInfo.cs','PixelTheme.cs','StateHistory.cs','DesktopFeatures.cs','UpdateService.cs','AgentUi.cs','Integrations.cs','AgentTrafficLight.cs') | ForEach-Object { Join-Path $root $_ }
+$appSources = @('AppInfo.cs','PixelTheme.cs','DpiSupport.cs','StateHistory.cs','UsageStatistics.cs','DesktopFeatures.cs','UpdateService.cs','AgentUi.cs','Integrations.cs','CodexEventCompatibility.cs','AgentTrafficLight.cs') | ForEach-Object { Join-Path $root $_ }
 
 & 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe' /nologo /target:exe /optimize+ /platform:anycpu /out:$mcpExe /reference:System.dll /reference:System.Core.dll /reference:System.Web.Extensions.dll (Join-Path $root 'TraeMcpHost.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Test MCP helper compilation failed.' }
@@ -25,6 +25,7 @@ $taskType = $assembly.GetType('AgentTrafficLightNative.AgentTask')
 $statusField = $taskType.GetField('Status', [Reflection.BindingFlags]'Instance,NonPublic,Public')
 $sourceField = $taskType.GetField('Source', [Reflection.BindingFlags]'Instance,NonPublic,Public')
 $idField = $taskType.GetField('Id', [Reflection.BindingFlags]'Instance,NonPublic,Public')
+$startedField = $taskType.GetField('StartedAt', [Reflection.BindingFlags]'Instance,NonPublic,Public')
 $updatedField = $taskType.GetField('UpdatedAt', [Reflection.BindingFlags]'Instance,NonPublic,Public')
 $pendingExecField = $taskType.GetField('PendingExec', [Reflection.BindingFlags]'Instance,NonPublic,Public')
 $scan = $engineType.GetMethod('Scan', [Reflection.BindingFlags]'Instance,NonPublic,Public')
@@ -59,16 +60,18 @@ function Invoke-Replay([string]$source, [string[]]$files, [string]$target, [stri
   Write-Host "PASS ${source}: $($actual -join ' -> ')"
 }
 
-Invoke-Replay 'Codex' (1..4 | ForEach-Object { Join-Path $fixtures ('codex-0' + $_ + '-' + @('running','attention','complete','running')[$_-1] + '.jsonl') }) $codexTarget @('running','attention','complete','running')
-Invoke-Replay 'Codex' (1..4 | ForEach-Object { Join-Path $fixtures ('codex-edit-0' + $_ + '-' + @('running','attention','running-after-approval','complete')[$_-1] + '.jsonl') }) $codexTarget @('running','running','running','complete')
-Invoke-Replay 'Codex' (1..4 | ForEach-Object { Join-Path $fixtures ('codex-escalation-0' + $_ + '-' + @('running','attention','running-after-approval','complete')[$_-1] + '.jsonl') }) $codexTarget @('running','attention','running','complete')
+$ruleLibrary = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'state-rule-cases.json') -Encoding UTF8 -Raw | ConvertFrom-Json
+if ($ruleLibrary.version -ne 1 -or @($ruleLibrary.cases).Count -lt 5) { throw 'State rule regression library is incomplete.' }
+foreach ($case in $ruleLibrary.cases) {
+  $target = if ($case.source -eq 'Codex') { $codexTarget } elseif ($case.source -eq 'Claude Code') { $claudeTarget } elseif ($case.source -eq 'OpenCode') { $openTarget } else { throw "Unsupported replay source: $($case.source)" }
+  $caseFiles = @($case.fixtures | ForEach-Object { Join-Path $fixtures $_ })
+  Invoke-Replay ([string]$case.source) $caseFiles $target @($case.expected)
+}
+Write-Host "PASS state rule regression library: $(@($ruleLibrary.cases).Count) cases"
 $keywordCodex = $parseCodex.Invoke(([Activator]::CreateInstance($engineType, $true)), @([string](Join-Path $fixtures 'codex-keywords-no-attention.jsonl'), [long][DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())) | Select-Object -First 1
 if ($statusField.GetValue($keywordCodex) -ne 'running') { throw 'Codex keywords inside a normal tool call were misclassified as attention.' }
 if (-not $pendingExecField.GetValue($keywordCodex)) { throw 'Codex pending exec was not marked for the conditional UI probe.' }
 Write-Host 'PASS Codex JSONL structural attention and pending-exec probe gating'
-
-Invoke-Replay 'Claude Code' (1..4 | ForEach-Object { Join-Path $fixtures ('claude-transcript-0' + $_ + '-' + @('running','attention','complete','running')[$_-1] + '.jsonl') }) $claudeTarget @('running','attention','complete','running')
-Invoke-Replay 'OpenCode' (1..4 | ForEach-Object { Join-Path $fixtures ('opencode-0' + $_ + '-' + @('running','attention','complete','running')[$_-1] + '.json') }) $openTarget @('running','attention','complete','running')
 
 $bridgeEngine = [Activator]::CreateInstance($engineType, $true)
 $invalidOpenCode = $parseBridge.Invoke($bridgeEngine, @([string](Join-Path $fixtures 'opencode-invalid-session.json'), [long][DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()))
@@ -88,6 +91,14 @@ function Resolve-State([string]$source, $candidate, [long]$runtimeStart, [long]$
   $args = New-Object 'object[]' 5; $args[0]=$source; $args[1]=$candidate; $args[2]=$runtimeStart; $args[3]=$seenAt; $args[4]=$previous
   return $resolveForRuntime.Invoke($null,$args)
 }
+
+$compatibilityType = $assembly.GetType('AgentTrafficLightNative.CodexEventCompatibility')
+$isToolCall = $compatibilityType.GetMethod('IsToolCall', [Reflection.BindingFlags]'Static,NonPublic,Public')
+$isToolOutput = $compatibilityType.GetMethod('IsToolOutput', [Reflection.BindingFlags]'Static,NonPublic,Public')
+$isExec = $compatibilityType.GetMethod('IsExec', [Reflection.BindingFlags]'Static,NonPublic,Public')
+$isComputerUseAction = $compatibilityType.GetMethod('IsComputerUseAction', [Reflection.BindingFlags]'Static,NonPublic,Public')
+if (-not $isToolCall.Invoke($null, @('custom_tool_call')) -or -not $isToolCall.Invoke($null, @('function_call')) -or -not $isToolOutput.Invoke($null, @('function_call_output')) -or -not $isExec.Invoke($null, @('exec')) -or -not $isExec.Invoke($null, @('exec_command')) -or -not $isComputerUseAction.Invoke($null, @('js','{"code":"await sky.launch_app({app:\"Agent-Beacon.exe\"});"}')) -or $isComputerUseAction.Invoke($null, @('js','{"code":"await sky.get_window_state({window:target});"}'))) { throw 'Codex event compatibility mappings are incomplete.' }
+Write-Host 'PASS centralized Codex event compatibility mappings'
 
 $mcpEngine = [Activator]::CreateInstance($engineType, $true)
 $mcpStates = @(); $mcpRows = @()
@@ -119,6 +130,36 @@ if ($centers.Count -ne 4 -or ($centers -join ',') -ne '48,116,184,252') { throw 
 $pixel.Dispose()
 Write-Host 'PASS four-agent concurrent state and pixel layout'
 
+$adaptiveType = $assembly.GetType('AgentTrafficLightNative.AdaptiveScanPolicy')
+$intervalMethod = $adaptiveType.GetMethod('Interval', [Reflection.BindingFlags]'Static,NonPublic,Public')
+$settingsType = $assembly.GetType('AgentTrafficLightNative.SettingsData')
+$adaptiveSettings = [Activator]::CreateInstance($settingsType, $true)
+$settingsType.GetField('RefreshMs', [Reflection.BindingFlags]'Instance,NonPublic,Public').SetValue($adaptiveSettings, 10000)
+$attentionList = [Activator]::CreateInstance($taskListType); $attentionList.Add((New-StateTask 'Codex' 'adaptive:attention' 'attention' $runtimeNow))
+$runningList = [Activator]::CreateInstance($taskListType); $runningList.Add((New-StateTask 'Codex' 'adaptive:running' 'running' $runtimeNow))
+$emptyList = [Activator]::CreateInstance($taskListType)
+if ($intervalMethod.Invoke($null, @($adaptiveSettings, $attentionList)) -ne 800 -or $intervalMethod.Invoke($null, @($adaptiveSettings, $runningList)) -ne 1500 -or $intervalMethod.Invoke($null, @($adaptiveSettings, $emptyList)) -ne 10000) { throw 'Adaptive scan intervals are incorrect.' }
+Write-Host 'PASS adaptive active, attention, and idle scan intervals'
+
+$statsPath = Join-Path $work 'usage-stats.json'; $oldStatsPath = $env:AGENT_BEACON_STATS_PATH; $env:AGENT_BEACON_STATS_PATH = $statsPath
+$statsType = $assembly.GetType('AgentTrafficLightNative.UsageStatistics')
+$statsUpdate = $statsType.GetMethod('Update', [Reflection.BindingFlags]'Static,NonPublic,Public')
+$statsSnapshot = $statsType.GetMethod('Snapshot', [Reflection.BindingFlags]'Static,NonPublic,Public')
+$statsTask = New-StateTask 'Codex' 'SECRET-TASK-ID' 'running' $runtimeNow
+$statsList = [Activator]::CreateInstance($taskListType); $statsList.Add($statsTask)
+function Update-Stats($list, [long]$at) { $arguments = New-Object 'object[]' 2; $arguments[0] = $list; $arguments[1] = $at; $statsUpdate.Invoke($null, $arguments) | Out-Null }
+Update-Stats $statsList $runtimeNow
+Update-Stats $statsList ([long]$runtimeNow + 60000)
+$statusField.SetValue($statsTask, 'attention'); Update-Stats $statsList ([long]$runtimeNow + 60000)
+Update-Stats $statsList ([long]$runtimeNow + 120000)
+$statusField.SetValue($statsTask, 'complete'); Update-Stats $statsList ([long]$runtimeNow + 120000)
+$statsType.GetMethod('Flush', [Reflection.BindingFlags]'Static,NonPublic,Public').Invoke($null, @()) | Out-Null
+$snapshot = $statsSnapshot.Invoke($null, @())
+if ($snapshot.GetType().GetField('CompletedTasks').GetValue($snapshot) -ne 1 -or $snapshot.GetType().GetField('RunningMs').GetValue($snapshot) -lt 60000 -or $snapshot.GetType().GetField('AttentionMs').GetValue($snapshot) -lt 60000) { throw 'Privacy-safe usage statistics are incorrect.' }
+if ((Get-Content -LiteralPath $statsPath -Encoding UTF8 -Raw) -match 'SECRET-TASK-ID') { throw 'Usage statistics leaked a task identifier.' }
+$env:AGENT_BEACON_STATS_PATH = $oldStatsPath
+Write-Host 'PASS privacy-safe daily completion and duration statistics'
+
 $integrationType = $assembly.GetType('AgentTrafficLightNative.Integration')
 $ensureTraeMcp = $integrationType.GetMethod('EnsureTraeMcpHelper', [Reflection.BindingFlags]'Static,NonPublic')
 $isTraeMcpPrepared = $integrationType.GetMethod('IsTraeMcpPrepared', [Reflection.BindingFlags]'Static,NonPublic,Public')
@@ -143,7 +184,6 @@ $freshNow = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 if (-not $freshness.Invoke($null, @([long]($freshNow - 9 * 60 * 1000), [long]$freshNow)) -or $freshness.Invoke($null, @([long]($freshNow - 11 * 60 * 1000), [long]$freshNow))) { throw 'TRAE MCP freshness window is invalid.' }
 Write-Host 'PASS TRAE MCP recent/stale connection classification'
 
-$settingsType = $assembly.GetType('AgentTrafficLightNative.SettingsData')
 $settings = [Activator]::CreateInstance($settingsType, $true)
 $notificationType = $assembly.GetType('AgentTrafficLightNative.NotificationPolicy')
 $agentEnabled = $notificationType.GetMethod('AgentEnabled', [Reflection.BindingFlags]'Static,NonPublic,Public')
@@ -156,7 +196,14 @@ $settingsType.GetField('QuietStartHour', [Reflection.BindingFlags]'Instance,NonP
 $settingsType.GetField('QuietEndHour', [Reflection.BindingFlags]'Instance,NonPublic,Public').SetValue($settings, [DateTime]::Now.Hour)
 $isQuiet = $notificationType.GetMethod('IsQuiet', [Reflection.BindingFlags]'Static,NonPublic,Public')
 if (-not $isQuiet.Invoke($null, @($settings, [DateTime]::Now))) { throw 'Quiet-hours notification suppression failed.' }
-Write-Host 'PASS per-agent notifications and quiet-hours policy'
+$policySettings = [Activator]::CreateInstance($settingsType, $true)
+$settingsType.GetField('AttentionNotifyDelaySeconds', [Reflection.BindingFlags]'Instance,NonPublic,Public').SetValue($policySettings, 10)
+$settingsType.GetField('LongRunningReminderMinutes', [Reflection.BindingFlags]'Instance,NonPublic,Public').SetValue($policySettings, 10)
+$policyTask = New-StateTask 'Codex' 'notification:long' 'running' $runtimeNow; $startedField.SetValue($policyTask, [long]$runtimeNow)
+$attentionDelay = $notificationType.GetMethod('AttentionDelayMs', [Reflection.BindingFlags]'Static,NonPublic,Public')
+$longReminder = $notificationType.GetMethod('ShouldRemindLongRunning', [Reflection.BindingFlags]'Static,NonPublic,Public')
+if ($attentionDelay.Invoke($null, @($policySettings)) -ne 10000 -or -not $longReminder.Invoke($null, @($policySettings, $policyTask, ([long]$runtimeNow + 600000)))) { throw 'Delayed attention or long-running notification policy failed.' }
+Write-Host 'PASS per-agent, quiet-hours, delayed attention, and long-running notification policy'
 
 $historyType = $assembly.GetType('AgentTrafficLightNative.StateHistory')
 $historyPath = Join-Path $work 'state-history.jsonl'; $oldHistoryPath = $env:AGENT_BEACON_HISTORY_PATH; $env:AGENT_BEACON_HISTORY_PATH = $historyPath
@@ -178,15 +225,21 @@ $matchesWindow = $windowType.GetMethod('Matches', [Reflection.BindingFlags]'Stat
 if (-not $matchesWindow.Invoke($null, @('Codex','ChatGPT','')) -or -not $matchesWindow.Invoke($null, @('TRAE','TRAE',''))) { throw 'Agent window matching rules failed.' }
 $updateType = $assembly.GetType('AgentTrafficLightNative.UpdateService')
 $safeTarget = $updateType.GetMethod('IsSafeUpdateTarget', [Reflection.BindingFlags]'Static,NonPublic,Public')
-if (-not $safeTarget.Invoke($null, @('D:\Agent-Beacon-1.4.2.exe')) -or $safeTarget.Invoke($null, @('C:\Windows\System32\notepad.exe'))) { throw 'Automatic update target validation failed.' }
+if (-not $safeTarget.Invoke($null, @('D:\Agent-Beacon-1.5.0.exe')) -or $safeTarget.Invoke($null, @('C:\Windows\System32\notepad.exe'))) { throw 'Automatic update target validation failed.' }
 $parseRelease = $updateType.GetMethod('ParseRelease', [Reflection.BindingFlags]'Static,NonPublic,Public')
 $releaseJson = '{"tag_name":"v9.9.9","html_url":"https://github.com/LAUFLO/agent-beacon/releases/tag/v9.9.9","assets":[{"name":"Agent-Beacon-9.9.9.exe","browser_download_url":"https://example.invalid/Agent-Beacon-9.9.9.exe","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}'
 $releaseInfo = $parseRelease.Invoke($null, @($releaseJson))
 $updateInfoType = $assembly.GetType('AgentTrafficLightNative.UpdateInfo')
 if ($updateInfoType.GetField('Version').GetValue($releaseInfo) -ne '9.9.9' -or $updateInfoType.GetField('Sha256').GetValue($releaseInfo).Length -ne 64) { throw 'GitHub release asset/digest parsing failed.' }
 $appInfoType = $assembly.GetType('AgentTrafficLightNative.AppInfo')
-if ($appInfoType.GetField('Version', [Reflection.BindingFlags]'Static,NonPublic,Public').GetRawConstantValue() -ne '1.4.2') { throw 'Application version metadata is not 1.4.2.' }
+if ($appInfoType.GetField('Version', [Reflection.BindingFlags]'Static,NonPublic,Public').GetRawConstantValue() -ne '1.5.0') { throw 'Application version metadata is not 1.5.0.' }
 Write-Host 'PASS click-to-focus matching, safe GitHub updater and centralized version metadata'
+
+$integrationType = $assembly.GetType('AgentTrafficLightNative.Integration')
+$health = $integrationType.GetMethod('HealthSummary', [Reflection.BindingFlags]'Static,NonPublic,Public').Invoke($null, @())
+$repair = $integrationType.GetMethod('RepairConfiguredIntegrations', [Reflection.BindingFlags]'Static,NonPublic,Public').Invoke($null, @())
+if ($health -notmatch 'TRAE:|Claude Code:|OpenCode:' -or $repair -notmatch '集成健康检查完成') { throw 'Integration health check and automatic repair are incomplete.' }
+Write-Host 'PASS configured integration health check and automatic repair'
 
 $env:AGENT_BEACON_TRAE_MCP_DIR = $oldUpgradeDir
 $env:AGENT_TRAFFIC_LIGHT_HOME = $oldHome

@@ -19,7 +19,7 @@ jobs:
   publish:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: main
           fetch-depth: 0
@@ -61,6 +61,7 @@ jobs:
           node .\tests\integration-event-tests.mjs
           .\tests\Release-Workflow-Tests.ps1
           .\tests\Ui-Style-Tests.ps1
+          .\tests\Reproducible-Build-Tests.ps1
 
       - name: Build application
         shell: powershell
@@ -71,7 +72,7 @@ jobs:
         env:
           EXPECTED_VERSION: ${{ steps.metadata.outputs.version }}
         run: |
-          $exe = Get-ChildItem -LiteralPath (Join-Path $PWD 'artifacts') -Filter 'Agent-Beacon-*.exe' | Select-Object -First 1
+          $exe = Get-Item -LiteralPath (Join-Path $PWD "artifacts\Agent-Beacon-$env:EXPECTED_VERSION.exe")
           if (-not $exe) { throw 'No Agent Beacon EXE was built.' }
           $builtVersion = $exe.VersionInfo.ProductVersion.Split('+')[0]
           if ($builtVersion -ne $env:EXPECTED_VERSION) { throw "Built version $builtVersion does not match $env:EXPECTED_VERSION." }
@@ -83,7 +84,7 @@ jobs:
           NOTES_SOURCE: ${{ steps.metadata.outputs.notes_source }}
           RELEASE_VERSION: ${{ steps.metadata.outputs.version }}
         run: |
-          $exe = Get-ChildItem -LiteralPath (Join-Path $PWD 'artifacts') -Filter 'Agent-Beacon-*.exe' | Select-Object -First 1
+          $exe = Get-Item -LiteralPath (Join-Path $PWD "artifacts\Agent-Beacon-$env:RELEASE_VERSION.exe")
           if (-not $exe) { throw 'No Agent Beacon EXE was built.' }
           $hash = (Get-FileHash -LiteralPath $exe.FullName -Algorithm SHA256).Hash
           $content = Get-Content -LiteralPath $env:NOTES_SOURCE -Encoding UTF8 -Raw
@@ -94,7 +95,7 @@ jobs:
           [IO.File]::WriteAllText($rendered, $content, (New-Object Text.UTF8Encoding($false)))
           "file=$rendered" >> $env:GITHUB_OUTPUT
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: Agent-Beacon-${{ steps.metadata.outputs.version }}
           path: artifacts/*

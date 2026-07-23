@@ -1,0 +1,3 @@
+{"timestamp":"2026-07-23T04:30:30.000Z","type":"session_meta","payload":{"id":"codex-computer-use-replay"}}
+{"timestamp":"2026-07-23T04:30:31.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-computer-use"}}
+{"timestamp":"2026-07-23T04:30:32.000Z","type":"response_item","payload":{"type":"function_call","call_id":"call-computer-use","name":"js","arguments":"{\"code\":\"await sky.launch_app({app:\\\"D:\\\\\\\\agent-beacon\\\\\\\\artifacts\\\\\\\\Agent-Beacon-1.5.0.exe\\\"});\",\"title\":\"打开应用预览\"}"}}

@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $ui = Get-Content -LiteralPath (Join-Path $root 'AgentUi.cs') -Encoding UTF8 -Raw
 $history = Get-Content -LiteralPath (Join-Path $root 'StateHistory.cs') -Encoding UTF8 -Raw
@@ -7,11 +7,17 @@ $update = Get-Content -LiteralPath (Join-Path $root 'UpdateService.cs') -Encodin
 $build = Get-Content -LiteralPath (Join-Path $root 'build.ps1') -Encoding UTF8 -Raw
 $readme = Get-Content -LiteralPath (Join-Path $root 'README.md') -Encoding UTF8 -Raw
 $logoGenerator = Get-Content -LiteralPath (Join-Path $root 'tools\generate_pixel_logo.py') -Encoding UTF8 -Raw
-$all = @('AgentTrafficLight.cs','AgentUi.cs','StateHistory.cs','UpdateService.cs','PixelTheme.cs') | ForEach-Object { Get-Content -LiteralPath (Join-Path $root $_) -Encoding UTF8 -Raw }
+$dpi = Get-Content -LiteralPath (Join-Path $root 'DpiSupport.cs') -Encoding UTF8 -Raw
+$stats = Get-Content -LiteralPath (Join-Path $root 'UsageStatistics.cs') -Encoding UTF8 -Raw
+$installer = Get-Content -LiteralPath (Join-Path $root 'InstallerStub.cs') -Encoding UTF8 -Raw
+$all = @('AgentTrafficLight.cs','AgentUi.cs','StateHistory.cs','UpdateService.cs','PixelTheme.cs','DpiSupport.cs','UsageStatistics.cs','InstallerStub.cs') | ForEach-Object { Get-Content -LiteralPath (Join-Path $root $_) -Encoding UTF8 -Raw }
 
 if (($all -join "`n") -match 'MessageBox\.Show') { throw 'A native MessageBox remains and breaks the unified pixel style.' }
 if ($ui -notmatch 'BackColor = PixelTheme\.Paper' -or $ui -notmatch 'PixelTheme\.PaintWindow') { throw 'Settings page is not using the white pixel theme.' }
 if ($ui -notmatch 'ClientSize = new Size\(760, 500\)' -or $ui -match 'PixelTheme\.Label\(') { throw 'Settings page still contains redundant explanatory labels or excess height.' }
+if ($ui -notmatch 'AGENT BEACON v" \+ AppInfo\.Version \+ " // 设置' -or $ui -notmatch '今日统计' -or $ui -notmatch 'UsageStatistics\.Duration' -or $ui -notmatch '检查 / 修复') { throw 'Settings page does not show the current version, daily statistics, and integration repair entry.' }
+if ($ui -notmatch '复制 TRAE MCP.+Size = new Size\(188, 32\)' -or $ui -notmatch '检查 / 修复集成.+Location = new Point\(22, 350\)' -or $ui -notmatch '状态中心.+Location = new Point\(220, 350\)') { throw 'Settings integrations are not using the compact two-column layout.' }
+if ($ui -notmatch 'sealed class NotificationSettingsForm' -or $ui -notmatch '黄灯通知延迟' -or $ui -notmatch '长任务提醒') { throw 'Pixel notification policy page is missing.' }
 if ($history -notmatch 'ClientSize = new Size\(700, 520\)' -or $history -notmatch 'FormBorderStyle = FormBorderStyle\.None' -or $history -notmatch 'MaximizeBox = false; MinimizeBox = false') { throw 'Status center compact size/style is not fixed.' }
 if ($history -notmatch 'DiagnosticsHub\.Report\(\)' -or $ui -match 'DiagnosticsHub\.Report\(\)') { throw 'Live diagnostics were not moved into the status center.' }
 if ($theme -notmatch 'sealed class PixelDialog' -or $theme -notmatch 'Paper = Color\.FromArgb\(255, 255, 255\)' -or $theme -notmatch 'FillRectangle\(ink, 0, 0, width, 6\)') { throw 'Heavy white pixel dialog theme is incomplete.' }
@@ -20,9 +26,12 @@ if ($theme -notmatch 'item\.AutoSize = false' -or $theme -notmatch 'item\.Size =
 if ($ui -notmatch 'spacious' -and $theme -notmatch 'spacious') { throw 'Pixel dialogs do not support a compact layout.' }
 $ownedUi = $ui + $history + $theme
 if ($ownedUi -match 'Microsoft YaHei UI|Consolas' -or $theme -notmatch 'FontName = "SimSun"' -or $theme -notmatch 'MonoFontName = "NSimSun"') { throw 'App-owned UI does not use the unified CJK pixel font family.' }
+if ($dpi -notmatch 'SetProcessDpiAwarenessContext' -or $dpi -notmatch 'Screen\.FromRectangle' -or $ui -notmatch 'SystemEvents\.DisplaySettingsChanged' -or ($all -join "`n") -notmatch 'AutoScaleMode = AutoScaleMode\.Dpi') { throw 'Per-monitor DPI and multi-display protection are incomplete.' }
+if ($stats -notmatch 'AnonymousKey' -or $stats -match 'Title|Detail|Evidence') { throw 'Usage statistics are not privacy-safe.' }
 if ($theme -notmatch 'TextAlign = ContentAlignment\.MiddleCenter' -or $ui -notmatch 'TextAlign = ContentAlignment\.MiddleCenter') { throw 'Centerable UI text is not centered.' }
 if ($theme -notmatch 'sealed class PixelProgressForm' -or $theme -notmatch 'sealed class PixelProgressBar' -or $ui -notmatch 'UpdateService\.Download\(info, progress\.Report\)' -or $update -notmatch 'Action<int, string> report') { throw 'Automatic update does not use the pixel progress UI with real progress callbacks.' }
 if ($history -match 'ScrollBars\.Vertical' -or $history -notmatch 'sealed class PixelScrollBar' -or $history -notmatch 'sealed class PixelLogBox' -or $history -notmatch 'EM_LINESCROLL') { throw 'Status center still uses native scrollbars instead of the functional pixel scrollbar.' }
 if ($theme -notmatch 'AppIcon = LoadAppIcon\(\)' -or $theme -notmatch 'Icon\.ExtractAssociatedIcon\(Application\.ExecutablePath\)' -or ([regex]::Matches($ownedUi, 'Icon = PixelTheme\.AppIcon')).Count -lt 5) { throw 'App-owned windows are not consistently using the embedded application icon.' }
-if ($build -notmatch 'assets\\Agent-Beacon\.ico' -or $readme -notmatch 'assets/Agent-Beacon\.png' -or $logoGenerator -notmatch 'Image\.Resampling\.NEAREST' -or $logoGenerator -notmatch 'SIZES = \(16, 20, 24, 32, 40, 48, 64, 128, 256\)') { throw 'Pixel logo is not consistently generated and consumed by the EXE and README.' }
+if ($build -notmatch 'assets\\Agent-Beacon\.ico' -or $build -notmatch 'Agent-Beacon-Setup-\$version\.exe' -or $build -notmatch 'Agent-Beacon-Portable-\$version\.zip' -or $readme -notmatch 'assets/Agent-Beacon\.png' -or $logoGenerator -notmatch 'Image\.Resampling\.NEAREST' -or $logoGenerator -notmatch 'SIZES = \(16, 20, 24, 32, 40, 48, 64, 128, 256\)') { throw 'Pixel logo and portable/installer packages are not consistently generated.' }
+if ($installer -notmatch '安装位置（支持自定义）' -or $installer -notmatch 'new FolderBrowserDialog' -or $installer -notmatch 'NormalizeInstallDirectory' -or $installer -notmatch 'Program\.Install\(autoStart\.Checked, installPath\.Text\)') { throw 'Installer does not support a validated custom installation directory.' }
 Write-Host 'PASS unified pixel fonts, centered text, pixel logo/window icons, fixed status center, pixel dialogs/menus and update progress'
