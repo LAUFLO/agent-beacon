@@ -7,7 +7,7 @@ $oldHome = $env:AGENT_TRAFFIC_LIGHT_HOME
 New-Item -ItemType Directory -Force -Path $homePath | Out-Null
 
 try {
-  & 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe' /nologo /target:exe /optimize+ /platform:anycpu /out:$exe /reference:System.dll /reference:System.Core.dll /reference:System.Web.Extensions.dll (Join-Path $root 'TraeMcpHost.cs')
+  & 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe' /nologo /target:exe /optimize+ /platform:anycpu /out:$exe /reference:System.dll /reference:System.Core.dll /reference:System.Web.Extensions.dll (Join-Path $root 'src\Integrations\TraeMcpHost.cs')
   if ($LASTEXITCODE -ne 0) { throw 'TRAE MCP helper compilation failed.' }
 
   $start = New-Object System.Diagnostics.ProcessStartInfo
@@ -25,10 +25,10 @@ try {
 
   $initialize = Invoke-Mcp '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}'
   if ($initialize.result.serverInfo.name -ne 'agent-beacon-trae') { throw 'TRAE MCP initialize response is invalid.' }
-  if ($initialize.result.serverInfo.version -ne '1.6.1') { throw 'TRAE MCP version is not 1.6.1.' }
+  if ($initialize.result.serverInfo.version -ne '1.6.2') { throw 'TRAE MCP version is not 1.6.2.' }
   $healthPath = Join-Path $homePath '.agent-traffic-light\events\trae-mcp-health.json'
   $health = Get-Content -LiteralPath $healthPath -Encoding UTF8 -Raw | ConvertFrom-Json
-  if (-not $health.connected -or $health.helperVersion -ne '1.6.1') { throw 'TRAE MCP live health handshake was not recorded.' }
+  if (-not $health.connected -or $health.helperVersion -ne '1.6.2') { throw 'TRAE MCP live health handshake was not recorded.' }
   $tools = Invoke-Mcp '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
   if ($tools.result.tools[0].name -ne 'agent_beacon_report_state') { throw 'TRAE MCP status tool was not advertised.' }
   $propertyNames = @($tools.result.tools[0].inputSchema.properties.PSObject.Properties.Name | Sort-Object)

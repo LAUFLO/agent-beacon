@@ -314,7 +314,7 @@ namespace AgentTrafficLightNative {
     }
 
     void Build() {
-      SuspendLayout(); Controls.Clear();
+      SuspendLayout(); PixelTheme.DisposeChildren(this);
       int shown = Math.Min(6, tasks.Count), degraded = health.FindAll(delegate(TaskSourceHealth item) { return !item.Trusted; }).Count;
       int height = 64 + Math.Max(1, shown) * 58 + 58 + (degraded > 0 ? 30 : 0);
       ClientSize = new Size(430, Math.Min(438, height));

@@ -3,17 +3,18 @@ param([string]$OutputDirectory = (Join-Path $PSScriptRoot 'artifacts'))
 $ErrorActionPreference = 'Stop'
 $compiler = & (Join-Path $PSScriptRoot 'tools\Get-RoslynCompiler.ps1')
 if (-not $compiler -or -not (Test-Path -LiteralPath $compiler)) { throw 'Deterministic Roslyn compiler is unavailable.' }
-$versionMatch = Select-String -LiteralPath (Join-Path $PSScriptRoot 'AppInfo.cs') -Pattern 'public const string Version = "([0-9]+\.[0-9]+\.[0-9]+)"' | Select-Object -First 1
+$appInfoPath = Join-Path $PSScriptRoot 'src\Core\AppInfo.cs'
+$versionMatch = Select-String -LiteralPath $appInfoPath -Pattern 'public const string Version = "([0-9]+\.[0-9]+\.[0-9]+)"' | Select-Object -First 1
 if (-not $versionMatch) { throw 'App version was not found in AppInfo.cs.' }
 $version = $versionMatch.Matches[0].Groups[1].Value
 $helper = Join-Path $PSScriptRoot 'integrations\Agent-Beacon-MCP.exe'
 $output = Join-Path $OutputDirectory "Agent-Beacon-$version.exe"
 $setup = Join-Path $OutputDirectory "Agent-Beacon-Setup-$version.exe"
-$sources = @('AppInfo.cs','PixelTheme.cs','DpiSupport.cs','StateHistory.cs','UsageStatistics.cs','DesktopFeatures.cs','TaskCenter.cs','UpdateService.cs','AgentUi.cs','Integrations.cs','CodexEventCompatibility.cs','AgentTrafficLight.cs') | ForEach-Object { Join-Path $PSScriptRoot $_ }
+$sources = & (Join-Path $PSScriptRoot 'tools\Get-AppSourceFiles.ps1') -Root $PSScriptRoot
 New-Item -ItemType Directory -Force -Path $OutputDirectory, (Split-Path $helper) | Out-Null
 
 $deterministic = @('/deterministic+',("/pathmap:" + $PSScriptRoot + '=/_/AgentBeacon'))
-$helperArguments = @('/nologo','/target:exe','/optimize+','/platform:anycpu',"/out:$helper",'/reference:System.dll','/reference:System.Core.dll','/reference:System.Web.Extensions.dll') + $deterministic + @((Join-Path $PSScriptRoot 'TraeMcpHost.cs'))
+$helperArguments = @('/nologo','/target:exe','/optimize+','/platform:anycpu',"/out:$helper",'/reference:System.dll','/reference:System.Core.dll','/reference:System.Web.Extensions.dll') + $deterministic + @((Join-Path $PSScriptRoot 'src\Integrations\TraeMcpHost.cs'))
 & $compiler $helperArguments
 if ($LASTEXITCODE -ne 0) { throw 'TRAE MCP Helper compilation failed.' }
 
@@ -38,7 +39,7 @@ $installerArguments = @(
   '/nologo','/target:winexe','/optimize+','/platform:anycpu',"/out:$setup","/win32icon:$icon",
   '/reference:System.dll','/reference:System.Core.dll','/reference:System.Drawing.dll','/reference:Microsoft.CSharp.dll','/reference:System.Windows.Forms.dll',
   "/resource:$output,agent-beacon.exe"
-) + $deterministic + @((Join-Path $PSScriptRoot 'AppInfo.cs'), (Join-Path $PSScriptRoot 'DpiSupport.cs'), (Join-Path $PSScriptRoot 'PixelTheme.cs'), (Join-Path $PSScriptRoot 'InstallerStub.cs'))
+) + $deterministic + @($appInfoPath, (Join-Path $PSScriptRoot 'src\UI\DpiSupport.cs'), (Join-Path $PSScriptRoot 'src\UI\PixelTheme.cs'), (Join-Path $PSScriptRoot 'installer\InstallerStub.cs'))
 & $compiler $installerArguments
 if ($LASTEXITCODE -ne 0) { throw 'Agent Beacon installer compilation failed.' }
 $setupHash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()

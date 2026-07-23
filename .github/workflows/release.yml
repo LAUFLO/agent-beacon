@@ -35,7 +35,7 @@ jobs:
             throw "main moved: requested $env:EXPECTED_SHA but checked out $actualSha"
           }
 
-          $match = Select-String -LiteralPath (Join-Path $PWD 'AppInfo.cs') -Pattern 'public const string Version = "([0-9]+\.[0-9]+\.[0-9]+)"' | Select-Object -First 1
+          $match = Select-String -LiteralPath (Join-Path $PWD 'src\Core\AppInfo.cs') -Pattern 'public const string Version = "([0-9]+\.[0-9]+\.[0-9]+)"' | Select-Object -First 1
           if (-not $match) { throw 'App version was not found in AppInfo.cs.' }
           $version = $match.Matches[0].Groups[1].Value
           $tag = "v$version"

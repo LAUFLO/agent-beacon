@@ -37,6 +37,15 @@ namespace AgentTrafficLightNative {
       return new Label { Text = text, AutoSize = false, Location = location, Size = size, BackColor = Color.Transparent, ForeColor = heading ? Ink : Muted, Font = heading ? StrongFont : SmallFont, TextAlign = ContentAlignment.MiddleCenter };
     }
 
+    public static void DisposeChildren(Control parent) {
+      if (parent == null) return;
+      while (parent.Controls.Count > 0) {
+        int index = parent.Controls.Count - 1; Control child = parent.Controls[index];
+        parent.Controls.RemoveAt(index);
+        try { child.Dispose(); } catch { }
+      }
+    }
+
     public static void PaintWindow(Graphics g, int width, int height, int dividerX) {
       g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None; g.Clear(Paper);
       using (var ink = new SolidBrush(Ink)) {
