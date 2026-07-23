@@ -513,7 +513,7 @@ namespace AgentTrafficLightNative {
       bool chineseApproval = value.IndexOf("允许", StringComparison.Ordinal) >= 0
         && (value.IndexOf("ChatGPT", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("Codex", StringComparison.OrdinalIgnoreCase) >= 0)
         && Regex.IsMatch(value, "编辑|运行|执行|访问");
-      return chineseApproval || Regex.IsMatch(value, "^(?:是否|要不要)允许|需要(?:你|您).{0,12}(?:确认|批准|选择)|do you want to allow|approval required|requires your approval", RegexOptions.IgnoreCase);
+      return chineseApproval || Regex.IsMatch(value, "^(?:是否|要不要)允许|需要(?:你|您).{0,12}(?:确认|批准|选择)|do you want to allow|allow\\s+.{1,80}\\s+to\\s+.{1,120}\\??$|approval required|requires your approval", RegexOptions.IgnoreCase);
     }
     public static bool IsCodexApprovalActionText(string text) {
       string value = (text ?? "").Trim();
