@@ -287,10 +287,11 @@ namespace AgentTrafficLightNative {
       else if (type == "response_item" && (ptype == "custom_tool_call" || ptype == "function_call")) {
         string name = Util.S(payload, "name", ""), input = Util.S(payload, "input", Util.S(payload, "arguments", ""));
         string callId = Util.S(payload, "call_id", Util.S(payload, "id", "")); callId = String.IsNullOrWhiteSpace(callId) ? "*" : callId;
-        if (String.Equals(name, "exec", StringComparison.OrdinalIgnoreCase)) { state.PendingExecCalls.Add(callId); task.PendingExec = true; }
+        bool execCall = IsCodexExecCall(name);
+        if (execCall) { state.PendingExecCalls.Add(callId); task.PendingExec = true; }
         bool explicitRequest = Regex.IsMatch(name, "^(?:request_permissions?|request_user_input|elicitation|approval(?:_request)?)$", RegexOptions.IgnoreCase)
           || Regex.IsMatch(input, @"tools\s*\.\s*(?:request_permissions?|request_user_input|elicitation|approval(?:_request)?)\s*\(", RegexOptions.IgnoreCase)
-          || (String.Equals(name, "exec", StringComparison.OrdinalIgnoreCase) && CodexInputRequiresEscalation(input));
+          || (execCall && CodexInputRequiresEscalation(input));
         if (explicitRequest) {
           state.PendingAttentionCalls.Add(callId);
           RefreshCodexPendingAttention(state);
@@ -301,6 +302,11 @@ namespace AgentTrafficLightNative {
         bool resolved = state.PendingAttentionCalls.Remove("*"); if (!String.IsNullOrWhiteSpace(callId)) resolved = state.PendingAttentionCalls.Remove(callId) || resolved;
         if (resolved) { RefreshCodexPendingAttention(state); if (task.Status == State.Running) task.Detail = "已确认，继续执行"; }
       }
+    }
+
+    static bool IsCodexExecCall(string name) {
+      return String.Equals(name, "exec", StringComparison.OrdinalIgnoreCase)
+        || String.Equals(name, "exec_command", StringComparison.OrdinalIgnoreCase);
     }
 
     static bool CodexInputRequiresEscalation(string input) {
@@ -493,7 +499,7 @@ namespace AgentTrafficLightNative {
       bool chineseApproval = value.IndexOf("允许", StringComparison.Ordinal) >= 0
         && (value.IndexOf("ChatGPT", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("Codex", StringComparison.OrdinalIgnoreCase) >= 0)
         && Regex.IsMatch(value, "编辑|运行|执行|访问");
-      return chineseApproval || Regex.IsMatch(value, "需要(?:你|您).{0,12}(?:确认|批准|选择)|do you want to allow|approval required|requires your approval", RegexOptions.IgnoreCase);
+      return chineseApproval || Regex.IsMatch(value, "^(?:是否|要不要)允许|需要(?:你|您).{0,12}(?:确认|批准|选择)|do you want to allow|approval required|requires your approval", RegexOptions.IgnoreCase);
     }
     public static bool IsCodexApprovalActionText(string text) {
       string value = (text ?? "").Trim();

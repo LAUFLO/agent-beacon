@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $work = Join-Path ([IO.Path]::GetTempPath()) ('atl-replay-' + [Guid]::NewGuid().ToString('N'))
 $homePath = Join-Path $work 'home'
@@ -42,7 +42,7 @@ foreach ($name in @('TraeNeedsUserAttention','TraeHasVisualAttention')) {
 $codexUiProbe = $processType.GetMethod('CodexNeedsUserAttention', [Reflection.BindingFlags]'Static,NonPublic,Public')
 $codexPromptText = $processType.GetMethod('IsCodexApprovalPromptText', [Reflection.BindingFlags]'Static,NonPublic,Public')
 if (-not $codexUiProbe -or -not $codexPromptText -or -not ($assembly.GetReferencedAssemblies().Name -match '^UIAutomation')) { throw 'Minimal Codex approval probe is missing.' }
-if (-not $codexPromptText.Invoke($null, @('Do you want to allow ChatGPT to run this command?')) -or -not $codexPromptText.Invoke($null, @('Approval required by Codex'))) { throw 'Codex approval prompt text was not recognized.' }
+if (-not $codexPromptText.Invoke($null, @('Do you want to allow ChatGPT to run this command?')) -or -not $codexPromptText.Invoke($null, @('Approval required by Codex')) -or -not $codexPromptText.Invoke($null, @('是否允许补充当前用户 PATH，使安装后的 kdocs-cli 可在新终端中直接运行？'))) { throw 'Codex approval prompt text was not recognized.' }
 Write-Host 'PASS TRAE fallbacks are absent and minimal Codex approval probe is present'
 
 function Invoke-Replay([string]$source, [string[]]$files, [string]$target, [string[]]$expected) {
@@ -178,14 +178,14 @@ $matchesWindow = $windowType.GetMethod('Matches', [Reflection.BindingFlags]'Stat
 if (-not $matchesWindow.Invoke($null, @('Codex','ChatGPT','')) -or -not $matchesWindow.Invoke($null, @('TRAE','TRAE',''))) { throw 'Agent window matching rules failed.' }
 $updateType = $assembly.GetType('AgentTrafficLightNative.UpdateService')
 $safeTarget = $updateType.GetMethod('IsSafeUpdateTarget', [Reflection.BindingFlags]'Static,NonPublic,Public')
-if (-not $safeTarget.Invoke($null, @('D:\Agent-Beacon-1.4.1.exe')) -or $safeTarget.Invoke($null, @('C:\Windows\System32\notepad.exe'))) { throw 'Automatic update target validation failed.' }
+if (-not $safeTarget.Invoke($null, @('D:\Agent-Beacon-1.4.2.exe')) -or $safeTarget.Invoke($null, @('C:\Windows\System32\notepad.exe'))) { throw 'Automatic update target validation failed.' }
 $parseRelease = $updateType.GetMethod('ParseRelease', [Reflection.BindingFlags]'Static,NonPublic,Public')
 $releaseJson = '{"tag_name":"v9.9.9","html_url":"https://github.com/LAUFLO/agent-beacon/releases/tag/v9.9.9","assets":[{"name":"Agent-Beacon-9.9.9.exe","browser_download_url":"https://example.invalid/Agent-Beacon-9.9.9.exe","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}'
 $releaseInfo = $parseRelease.Invoke($null, @($releaseJson))
 $updateInfoType = $assembly.GetType('AgentTrafficLightNative.UpdateInfo')
 if ($updateInfoType.GetField('Version').GetValue($releaseInfo) -ne '9.9.9' -or $updateInfoType.GetField('Sha256').GetValue($releaseInfo).Length -ne 64) { throw 'GitHub release asset/digest parsing failed.' }
 $appInfoType = $assembly.GetType('AgentTrafficLightNative.AppInfo')
-if ($appInfoType.GetField('Version', [Reflection.BindingFlags]'Static,NonPublic,Public').GetRawConstantValue() -ne '1.4.1') { throw 'Application version metadata is not 1.4.1.' }
+if ($appInfoType.GetField('Version', [Reflection.BindingFlags]'Static,NonPublic,Public').GetRawConstantValue() -ne '1.4.2') { throw 'Application version metadata is not 1.4.2.' }
 Write-Host 'PASS click-to-focus matching, safe GitHub updater and centralized version metadata'
 
 $env:AGENT_BEACON_TRAE_MCP_DIR = $oldUpgradeDir

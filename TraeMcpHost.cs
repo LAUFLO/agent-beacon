@@ -11,7 +11,7 @@ namespace AgentBeaconTraeMcp {
   // The settings installer extracts it locally, and TRAE communicates with it
   // through newline-delimited JSON-RPC over stdio.
   static class TraeMcpHost {
-    const string Version = "1.4.1";
+    const string Version = "1.4.2";
     static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = 4 * 1024 * 1024 };
     static readonly string ProcessSession = "mcp-" + Process.GetCurrentProcess().Id + "-" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     static string Home { get { string configured = Environment.GetEnvironmentVariable("AGENT_TRAFFIC_LIGHT_HOME"); if (!String.IsNullOrWhiteSpace(configured)) return configured; string profile = Environment.GetEnvironmentVariable("USERPROFILE"); return String.IsNullOrWhiteSpace(profile) ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) : profile; } }
