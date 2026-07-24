@@ -109,10 +109,19 @@ namespace AgentTrafficLightNative {
           var codexTasks = cycle.Tasks.FindAll(delegate(AgentTask task) { return task.Source == "Codex"; });
           AgentTask codexUiTarget = AgentStateRules.SelectCodexUiAttentionTarget(codexTasks);
           bool codexAlreadyAttention = codexTasks.Exists(delegate(AgentTask task) { return task.Status == State.Attention; });
-          cycle.CodexUiAttention = codexUiTarget != null && !codexAlreadyAttention && AgentProcesses.CodexNeedsUserAttention(cycle.Runtime, codexUiTarget.PendingExec);
-          if (cycle.CodexUiAttention) {
+          // Standalone UI Automation scan for Codex Desktop (no JSONL session files)
+          bool codexNeedsAttention = false;
+          if (!codexAlreadyAttention && cycle.Runtime.CodexUiProcessIds.Count > 0)
+            codexNeedsAttention = AgentProcesses.CodexNeedsUserAttention(cycle.Runtime, codexUiTarget != null && codexUiTarget.PendingExec);
+          cycle.CodexUiAttention = codexNeedsAttention;
+          if (codexNeedsAttention) {
             long eventAt = Util.Now();
-            cycle.Tasks.Add(new AgentTask { Id = "codex-ui-attention:" + codexUiTarget.Id, Source = "Codex", SessionId = codexUiTarget.SessionId, Title = codexUiTarget.Title, Cwd = codexUiTarget.Cwd, Status = State.Attention, Detail = "Codex 正在等待你的确认", Phase = "等待确认", Evidence = "Codex 当前可见审批卡", InteractionId = "ui:" + codexUiTarget.Id, StartedAt = codexUiTarget.StartedAt > 0 ? codexUiTarget.StartedAt : eventAt, UpdatedAt = eventAt, LastActivityAt = codexUiTarget.LastActivityAt });
+            string sid = codexUiTarget != null ? codexUiTarget.SessionId : "codex-ui-attention";
+            string title = codexUiTarget != null ? codexUiTarget.Title : "Codex 任务";
+            string taskId = "codex-ui-attention:" + (codexUiTarget != null ? codexUiTarget.Id : "standalone:" + eventAt);
+            long startedAt = codexUiTarget != null && codexUiTarget.StartedAt > 0 ? codexUiTarget.StartedAt : eventAt;
+            long lastActivity = codexUiTarget != null ? codexUiTarget.LastActivityAt : eventAt;
+            cycle.Tasks.Add(new AgentTask { Id = taskId, Source = "Codex", SessionId = sid, Title = title, Cwd = "", Status = State.Attention, Detail = "Codex 正在等待你的确认", Phase = "等待确认", Evidence = "Codex 当前可见审批弹窗", InteractionId = "ui:" + (codexUiTarget != null ? codexUiTarget.Id : "standalone"), StartedAt = startedAt, UpdatedAt = eventAt, LastActivityAt = lastActivity });
           }
         } catch (Exception ex) { cycle.Error = ex.GetType().Name + ": " + ex.Message; }
         watch.Stop(); cycle.DurationMs = watch.ElapsedMilliseconds;
