@@ -194,9 +194,9 @@ namespace AgentTrafficLightNative {
         var no = new PixelButton { Text = "取消", Location = new Point(width - 226, buttonY), Size = new Size(96, 34) }; no.Click += delegate { DialogResult = DialogResult.No; Close(); }; Controls.Add(no);
         var yes = new PixelButton { Text = "确认", Active = true, Location = new Point(width - 118, buttonY), Size = new Size(96, 34) }; yes.Click += delegate { DialogResult = DialogResult.Yes; Close(); }; Controls.Add(yes);
       } else if (options == PixelDialogButtons.YesNoDismiss) {
-        var ignore = new PixelButton { Text = "????", Location = new Point(width - 334, buttonY), Size = new Size(96, 34) }; ignore.Click += delegate { DialogResult = DialogResult.Ignore; Close(); }; Controls.Add(ignore);
-        var no = new PixelButton { Text = "??", Location = new Point(width - 226, buttonY), Size = new Size(96, 34) }; no.Click += delegate { DialogResult = DialogResult.No; Close(); }; Controls.Add(no);
-        var yes = new PixelButton { Text = "??", Active = true, Location = new Point(width - 118, buttonY), Size = new Size(96, 34) }; yes.Click += delegate { DialogResult = DialogResult.Yes; Close(); }; Controls.Add(yes);
+        var ignore = new PixelButton { Text = "不再提醒", Location = new Point(width - 334, buttonY), Size = new Size(96, 34) }; ignore.Click += delegate { DialogResult = DialogResult.Ignore; Close(); }; Controls.Add(ignore);
+        var no = new PixelButton { Text = "取消", Location = new Point(width - 226, buttonY), Size = new Size(96, 34) }; no.Click += delegate { DialogResult = DialogResult.No; Close(); }; Controls.Add(no);
+        var yes = new PixelButton { Text = "确认", Active = true, Location = new Point(width - 118, buttonY), Size = new Size(96, 34) }; yes.Click += delegate { DialogResult = DialogResult.Yes; Close(); }; Controls.Add(yes);
       } else {
         var ok = new PixelButton { Text = "确定", Active = true, Location = new Point(width - 118, buttonY), Size = new Size(96, 34) }; ok.Click += delegate { DialogResult = DialogResult.OK; Close(); }; Controls.Add(ok);
       }
