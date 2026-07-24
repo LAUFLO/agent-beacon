@@ -1,6 +1,7 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Windows.Forms;
+using System.Runtime.InteropServices;
 
 namespace AgentTrafficLightNative {
   static class PixelTheme {
@@ -126,18 +127,65 @@ namespace AgentTrafficLightNative {
     protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e) { using (var pen = new Pen(PixelTheme.Ink, 2)) e.Graphics.DrawLine(pen, 7, e.Item.Height / 2, e.Item.Width - 8, e.Item.Height / 2); }
   }
 
-  enum PixelDialogButtons { Ok, YesNo }
+  enum PixelDialogButtons { Ok, YesNo, YesNoDismiss }
+
+  sealed class PixelScrollBar : Control {
+    int maximum, largeChange = 1, value, dragOffset; bool dragging;
+    public event EventHandler ValueChanged;
+    public int Maximum { get { return maximum; } set { maximum = Math.Max(0, value); Value = this.value; Invalidate(); } }
+    public int LargeChange { get { return largeChange; } set { largeChange = Math.Max(1, value); Invalidate(); } }
+    public int Value { get { return value; } set { int next = Math.Max(0, Math.Min(maximum, value)); if (next == this.value) return; this.value = next; Invalidate(); if (ValueChanged != null) ValueChanged(this, EventArgs.Empty); } }
+    public PixelScrollBar() { SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.Selectable, true); Width = 18; BackColor = PixelTheme.Paper; Cursor = Cursors.Hand; AccessibleRole = AccessibleRole.ScrollBar; AccessibleName = "状态管理区"; }
+    Rectangle TrackRect { get { return new Rectangle(2, 20, Width - 4, Math.Max(1, Height - 40)); } }
+    Rectangle ThumbRect {
+      get { Rectangle track = TrackRect; int total = Math.Max(1, maximum + largeChange), thumbHeight = Math.Max(20, track.Height * largeChange / total); thumbHeight = Math.Min(track.Height, thumbHeight); int travel = Math.Max(0, track.Height - thumbHeight), y = track.Y + (maximum == 0 ? 0 : travel * value / maximum); return new Rectangle(3, y, Width - 6, thumbHeight); }
+    }
+    protected override void OnPaint(PaintEventArgs e) {
+      Graphics g = e.Graphics; g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None; g.Clear(PixelTheme.Paper);
+      using (var track = new SolidBrush(PixelTheme.Panel)) g.FillRectangle(track, TrackRect);
+      Rectangle thumb = ThumbRect; using (var ink = new SolidBrush(PixelTheme.Ink)) { g.FillRectangle(ink, 0, 0, Width, 3); g.FillRectangle(ink, 0, Height - 3, Width, 3); g.FillRectangle(ink, 0, 0, 3, Height); g.FillRectangle(ink, Width - 3, 0, 3, Height); g.FillRectangle(ink, 2, 18, Width - 4, 3); g.FillRectangle(ink, 2, Height - 21, Width - 4, 3); DrawArrow(g, true); DrawArrow(g, false); }
+      if (maximum > 0) { using (var ink = new SolidBrush(PixelTheme.Ink)) g.FillRectangle(ink, thumb); using (var fill = new SolidBrush(PixelTheme.Green)) g.FillRectangle(fill, thumb.X + 3, thumb.Y + 3, Math.Max(1, thumb.Width - 6), Math.Max(1, thumb.Height - 6)); }
+      base.OnPaint(e);
+    }
+    void DrawArrow(Graphics g, bool up) { int center = Width / 2, baseY = up ? 11 : Height - 12, direction = up ? -1 : 1; using (var ink = new SolidBrush(PixelTheme.Ink)) { g.FillRectangle(ink, center - 3, baseY, 7, 2); g.FillRectangle(ink, center - 2, baseY + direction * 2, 5, 2); g.FillRectangle(ink, center - 1, baseY + direction * 4, 3, 2); } }
+    protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); Focus(); if (e.Button != MouseButtons.Left) return; Rectangle thumb = ThumbRect; if (e.Y < 20) Value--; else if (e.Y >= Height - 20) Value++; else if (thumb.Contains(e.Location)) { dragging = true; dragOffset = e.Y - thumb.Y; Capture = true; } else Value += e.Y < thumb.Y ? -largeChange : largeChange; }
+    protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); if (!dragging || maximum == 0) return; Rectangle track = TrackRect, thumb = ThumbRect; int travel = Math.Max(1, track.Height - thumb.Height), offset = Math.Max(0, Math.Min(travel, e.Y - track.Y - dragOffset)); Value = (int)Math.Round(offset * (double)maximum / travel); }
+    protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); dragging = false; Capture = false; }
+    protected override void OnMouseWheel(MouseEventArgs e) { Value -= Math.Sign(e.Delta) * 3; base.OnMouseWheel(e); }
+  }
 
   sealed class PixelDialog : Form {
     bool dragging; Point dragOrigin; readonly PixelDialogButtons buttons; readonly bool spacious;
+    [DllImport("user32.dll", CharSet = CharSet.Auto)] static extern IntPtr SendMessage(IntPtr handle, int message, IntPtr wParam, IntPtr lParam);
     PixelDialog(string message, string title, PixelDialogButtons options) {
       buttons = options; spacious = (message ?? "").Length > 90 || (message ?? "").Split('\n').Length > 2; int width = spacious ? 500 : 400, height = spacious ? 230 : 152;
       Text = title; Icon = PixelTheme.AppIcon; ClientSize = new Size(width, height); FormBorderStyle = FormBorderStyle.None; MaximizeBox = false; MinimizeBox = false;
       ShowInTaskbar = Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") == "1"; StartPosition = FormStartPosition.CenterParent; BackColor = PixelTheme.Paper; ForeColor = PixelTheme.Ink; Font = PixelTheme.TextFont; AutoScaleMode = AutoScaleMode.Dpi; DoubleBuffered = true; KeyPreview = true;
       var heading = PixelTheme.Label(String.IsNullOrWhiteSpace(title) ? "AGENT BEACON" : title.ToUpperInvariant(), new Point(60, 8), new Size(width - 120, 32), true); Controls.Add(heading);
-      var close = new PixelButton { Text = "X", Danger = true, Location = new Point(width - 44, 9), Size = new Size(31, 29) }; close.Click += delegate { DialogResult = options == PixelDialogButtons.YesNo ? DialogResult.No : DialogResult.OK; Close(); }; Controls.Add(close);
+      var close = new PixelButton { Text = "X", Danger = true, Location = new Point(width - 44, 9), Size = new Size(31, 29) }; close.Click += delegate { DialogResult = options == PixelDialogButtons.YesNo || options == PixelDialogButtons.YesNoDismiss ? DialogResult.No : DialogResult.OK; Close(); }; Controls.Add(close);
       if (spacious) {
-        var text = new TextBox { Text = message ?? "", Multiline = true, ReadOnly = true, BorderStyle = BorderStyle.None, BackColor = PixelTheme.Paper, ForeColor = PixelTheme.Ink, Location = new Point(28, 68), Size = new Size(width - 56, 92), Font = PixelTheme.TextFont, ScrollBars = ScrollBars.Vertical, TabStop = false }; Controls.Add(text);
+        var text = new TextBox { Text = message ?? "", Multiline = true, ReadOnly = true, BorderStyle = BorderStyle.None, BackColor = PixelTheme.Paper, ForeColor = PixelTheme.Ink, Location = new Point(28, 68), Size = new Size(width - 76, 92), Font = PixelTheme.TextFont, ScrollBars = ScrollBars.None, TabStop = false, WordWrap = true }; Controls.Add(text);
+        var scroll = new PixelScrollBar { Location = new Point(width - 44, 68), Size = new Size(16, 92), Maximum = 0, LargeChange = 1 }; Controls.Add(scroll);
+        Action refreshScroll = null; refreshScroll = delegate {
+          if (!text.IsHandleCreated) return;
+          int total = text.GetLineFromCharIndex(text.TextLength) + 1;
+          int visible = Math.Max(1, text.ClientSize.Height / Math.Max(1, text.Font.Height));
+          scroll.Maximum = Math.Max(0, total - visible); scroll.LargeChange = visible;
+        };
+        text.TextChanged += delegate { refreshScroll(); };
+        text.Resize += delegate { refreshScroll(); };
+        scroll.ValueChanged += delegate {
+          if (!text.IsHandleCreated) return;
+          int current = SendMessage(text.Handle, 0xCE, IntPtr.Zero, IntPtr.Zero).ToInt32();
+          int target = scroll.Value;
+          if (target != current) SendMessage(text.Handle, 0xB6, IntPtr.Zero, new IntPtr(target - current));
+        };
+        text.MouseWheel += delegate(object s, MouseEventArgs e) {
+          var handled = e as HandledMouseEventArgs;
+          if (handled != null) handled.Handled = true;
+          scroll.Value -= Math.Sign(e.Delta) * 3;
+        };
+        text.KeyUp += delegate { refreshScroll(); };
       } else {
         var text = PixelTheme.Label(message ?? "", new Point(28, 60), new Size(width - 56, 34), false); text.ForeColor = PixelTheme.Ink; text.Font = PixelTheme.TextFont; text.TextAlign = ContentAlignment.MiddleCenter; Controls.Add(text);
       }
@@ -145,6 +193,10 @@ namespace AgentTrafficLightNative {
       if (options == PixelDialogButtons.YesNo) {
         var no = new PixelButton { Text = "取消", Location = new Point(width - 226, buttonY), Size = new Size(96, 34) }; no.Click += delegate { DialogResult = DialogResult.No; Close(); }; Controls.Add(no);
         var yes = new PixelButton { Text = "确认", Active = true, Location = new Point(width - 118, buttonY), Size = new Size(96, 34) }; yes.Click += delegate { DialogResult = DialogResult.Yes; Close(); }; Controls.Add(yes);
+      } else if (options == PixelDialogButtons.YesNoDismiss) {
+        var ignore = new PixelButton { Text = "????", Location = new Point(width - 334, buttonY), Size = new Size(96, 34) }; ignore.Click += delegate { DialogResult = DialogResult.Ignore; Close(); }; Controls.Add(ignore);
+        var no = new PixelButton { Text = "??", Location = new Point(width - 226, buttonY), Size = new Size(96, 34) }; no.Click += delegate { DialogResult = DialogResult.No; Close(); }; Controls.Add(no);
+        var yes = new PixelButton { Text = "??", Active = true, Location = new Point(width - 118, buttonY), Size = new Size(96, 34) }; yes.Click += delegate { DialogResult = DialogResult.Yes; Close(); }; Controls.Add(yes);
       } else {
         var ok = new PixelButton { Text = "确定", Active = true, Location = new Point(width - 118, buttonY), Size = new Size(96, 34) }; ok.Click += delegate { DialogResult = DialogResult.OK; Close(); }; Controls.Add(ok);
       }
@@ -153,7 +205,7 @@ namespace AgentTrafficLightNative {
 
     public static DialogResult Show(IWin32Window owner, string message, string title, PixelDialogButtons buttons) { using (var dialog = new PixelDialog(message, title, buttons)) return owner == null ? dialog.ShowDialog() : dialog.ShowDialog(owner); }
     public static DialogResult Show(string message, string title) { return Show(null, message, title, PixelDialogButtons.Ok); }
-    protected override void OnKeyDown(KeyEventArgs e) { if (e.KeyCode == Keys.Escape) { DialogResult = buttons == PixelDialogButtons.YesNo ? DialogResult.No : DialogResult.OK; Close(); e.Handled = true; } else if (e.KeyCode == Keys.Enter) { DialogResult = buttons == PixelDialogButtons.YesNo ? DialogResult.Yes : DialogResult.OK; Close(); e.Handled = true; } base.OnKeyDown(e); }
+    protected override void OnKeyDown(KeyEventArgs e) { if (e.KeyCode == Keys.Escape) { DialogResult = buttons == PixelDialogButtons.YesNo || buttons == PixelDialogButtons.YesNoDismiss ? DialogResult.No : DialogResult.OK; Close(); e.Handled = true; } else if (e.KeyCode == Keys.Enter) { DialogResult = buttons == PixelDialogButtons.YesNo || buttons == PixelDialogButtons.YesNoDismiss ? DialogResult.Yes : DialogResult.OK; Close(); e.Handled = true; } base.OnKeyDown(e); }
     void BeginDrag(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) { dragging = true; dragOrigin = Cursor.Position; } }
     void ContinueDrag(object sender, MouseEventArgs e) { if (!dragging) return; Point now = Cursor.Position; Location = new Point(Left + now.X - dragOrigin.X, Top + now.Y - dragOrigin.Y); dragOrigin = now; }
     void EndDrag(object sender, MouseEventArgs e) { dragging = false; }

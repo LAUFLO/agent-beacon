@@ -5,6 +5,7 @@ using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
@@ -21,7 +22,7 @@ namespace AgentTrafficLightNative {
       settings = loaded; if (settings.LampScale != 150 && settings.LampScale != 200) settings.LampScale = 100; float initialScale = settings.LampScale / 100f;
       Text = "Agent Beacon v" + AppInfo.Version; Name = "AgentBeaconWindow"; Icon = PixelTheme.AppIcon; Width = (int)Math.Round(38 * initialScale); Height = (int)Math.Round(88 * initialScale); BackColor = PixelPoleControl.KeyColor; TransparencyKey = PixelPoleControl.KeyColor; ForeColor = Color.White; FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") == "1"; StartPosition = FormStartPosition.Manual; Location = new Point(Screen.PrimaryScreen.WorkingArea.Right - Width - 20, Screen.PrimaryScreen.WorkingArea.Top + 20); TopMost = true; AutoScaleMode = AutoScaleMode.Dpi; DoubleBuffered = true;
       BuildUi(); BuildTray(); BuildTaskbarMenu(); timer.Interval = settings.RefreshMs; timer.Tick += delegate { RefreshTasks(); }; timer.Start(); taskbarBlinkTimer.Interval = 500; taskbarBlinkTimer.Tick += delegate { taskbarBlinkOn = !taskbarBlinkOn; UpdateTaskbarBlink(); }; eventDebounceTimer.Interval = 900; eventDebounceTimer.Tick += delegate { eventDebounceTimer.Stop(); RefreshTasks(); };
-      Shown += delegate { if (watchers == null) watchers = new MonitorWatchers(delegate(bool layoutChanged) { if (layoutChanged) engine.InvalidateDiscovery(); try { if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(delegate { if (!eventDebounceTimer.Enabled) eventDebounceTimer.Start(); })); } catch { } }); if (settings.TaskbarMode) Hide(); RefreshTasks(); if (!startupUpdateChecked && settings.AutoCheckUpdates && Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") != "1") { startupUpdateChecked = true; BeginUpdateCheck(true); } };
+      Shown += delegate { if (watchers == null) watchers = new MonitorWatchers(delegate(bool layoutChanged) { if (layoutChanged) engine.InvalidateDiscovery(); try { if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(delegate { if (!eventDebounceTimer.Enabled) eventDebounceTimer.Start(); })); } catch { } }); if (settings.TaskbarMode) Hide(); RefreshTasks(); if (!startupUpdateChecked && settings.AutoCheckUpdates && Environment.GetEnvironmentVariable("AGENT_BEACON_UI_TEST") != "1") { startupUpdateChecked = true; BeginUpdateCheck(true); } Task.Run(() => Integration.EnsureCodexHook()); };
       DpiChanged += delegate { BeginInvoke(new Action(delegate { DpiSupport.KeepOnScreen(this); widget.Invalidate(); })); }; SystemEvents.DisplaySettingsChanged += HandleDisplaySettingsChanged;
       FormClosing += delegate(object sender, FormClosingEventArgs e) { if (!quitting) { e.Cancel = true; Hide(); tray.ShowBalloonTip(900, "Agent Beacon", "仍在托盘监控，双击灯标可恢复。", ToolTipIcon.None); } };
     }
@@ -212,7 +213,7 @@ namespace AgentTrafficLightNative {
       ThreadPool.QueueUserWorkItem(delegate {
         try {
           UpdateInfo info = UpdateService.CheckLatest();
-          if (!IsDisposed) BeginInvoke(new Action(delegate { updateChecking = false; if (info == null) { if (!silent) PixelDialog.Show(this, "已是最新版本 v" + AppInfo.Version + "。", "检查更新", PixelDialogButtons.Ok); return; } if (PixelDialog.Show(this, "发现 v" + info.Version + "，是否立即更新？", "发现新版本", PixelDialogButtons.YesNo) == DialogResult.Yes) DownloadAndApplyUpdate(info); }));
+          if (!IsDisposed) BeginInvoke(new Action(delegate { updateChecking = false; if (info == null) { if (!silent) PixelDialog.Show(this, "已是最新版本 v" + AppInfo.Version + "。", "检查更新", PixelDialogButtons.Ok); return; } if (!String.IsNullOrEmpty(settings.DismissedUpdateVersion) && settings.DismissedUpdateVersion == info.Version) return; string _m = "发现 v" + info.Version + "，是否立即更新？\n\n" + (info.Body ?? "无发布说明") + "\n\n"; var _r = PixelDialog.Show(this, _m, "发现新版本", PixelDialogButtons.YesNoDismiss); if (_r == DialogResult.Yes) DownloadAndApplyUpdate(info); else if (_r == DialogResult.Ignore) { settings.DismissedUpdateVersion = info.Version; Program.SaveSettings(settings); } }));
         } catch (Exception ex) { if (!IsDisposed) BeginInvoke(new Action(delegate { updateChecking = false; if (!silent) PixelDialog.Show(this, "检查更新失败：\n" + ex.Message, "检查更新", PixelDialogButtons.Ok); })); }
       });
     }

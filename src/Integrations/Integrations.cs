@@ -336,5 +336,10 @@ namespace AgentTrafficLightNative {
         return "Claude Code Hooks 已安装。\n已保留备份（如原文件存在），请重启 Claude Code。";
       } catch (Exception ex) { return "安装失败：" + ex.Message; }
     }
+
+    public static void EnsureCodexHook() {
+      if (!IsCodexHookInstalled()) { InstallCodexHook(); return; }
+      EnsureCodexHookConfig();
+    }
   }
 }

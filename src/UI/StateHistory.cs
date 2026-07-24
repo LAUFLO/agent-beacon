@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -64,31 +64,6 @@ namespace AgentTrafficLightNative {
       string clean = value.Replace("\r", " ").Replace("\n", " ").Trim();
       return clean.Length > maximum ? clean.Substring(0, maximum) : clean;
     }
-  }
-
-  sealed class PixelScrollBar : Control {
-    int maximum, largeChange = 1, value, dragOffset; bool dragging;
-    public event EventHandler ValueChanged;
-    public int Maximum { get { return maximum; } set { maximum = Math.Max(0, value); Value = this.value; Invalidate(); } }
-    public int LargeChange { get { return largeChange; } set { largeChange = Math.Max(1, value); Invalidate(); } }
-    public int Value { get { return value; } set { int next = Math.Max(0, Math.Min(maximum, value)); if (next == this.value) return; this.value = next; Invalidate(); if (ValueChanged != null) ValueChanged(this, EventArgs.Empty); } }
-    public PixelScrollBar() { SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.Selectable, true); Width = 18; BackColor = PixelTheme.Paper; Cursor = Cursors.Hand; AccessibleRole = AccessibleRole.ScrollBar; AccessibleName = "像素滚动条"; }
-    Rectangle TrackRect { get { return new Rectangle(2, 20, Width - 4, Math.Max(1, Height - 40)); } }
-    Rectangle ThumbRect {
-      get { Rectangle track = TrackRect; int total = Math.Max(1, maximum + largeChange), thumbHeight = Math.Max(20, track.Height * largeChange / total); thumbHeight = Math.Min(track.Height, thumbHeight); int travel = Math.Max(0, track.Height - thumbHeight), y = track.Y + (maximum == 0 ? 0 : travel * value / maximum); return new Rectangle(3, y, Width - 6, thumbHeight); }
-    }
-    protected override void OnPaint(PaintEventArgs e) {
-      Graphics g = e.Graphics; g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None; g.Clear(PixelTheme.Paper);
-      using (var track = new SolidBrush(PixelTheme.Panel)) g.FillRectangle(track, TrackRect);
-      Rectangle thumb = ThumbRect; using (var ink = new SolidBrush(PixelTheme.Ink)) { g.FillRectangle(ink, 0, 0, Width, 3); g.FillRectangle(ink, 0, Height - 3, Width, 3); g.FillRectangle(ink, 0, 0, 3, Height); g.FillRectangle(ink, Width - 3, 0, 3, Height); g.FillRectangle(ink, 2, 18, Width - 4, 3); g.FillRectangle(ink, 2, Height - 21, Width - 4, 3); DrawArrow(g, true); DrawArrow(g, false); }
-      if (maximum > 0) { using (var ink = new SolidBrush(PixelTheme.Ink)) g.FillRectangle(ink, thumb); using (var fill = new SolidBrush(PixelTheme.Green)) g.FillRectangle(fill, thumb.X + 3, thumb.Y + 3, Math.Max(1, thumb.Width - 6), Math.Max(1, thumb.Height - 6)); }
-      base.OnPaint(e);
-    }
-    void DrawArrow(Graphics g, bool up) { int center = Width / 2, baseY = up ? 11 : Height - 12, direction = up ? -1 : 1; using (var ink = new SolidBrush(PixelTheme.Ink)) { g.FillRectangle(ink, center - 3, baseY, 7, 2); g.FillRectangle(ink, center - 2, baseY + direction * 2, 5, 2); g.FillRectangle(ink, center - 1, baseY + direction * 4, 3, 2); } }
-    protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); Focus(); if (e.Button != MouseButtons.Left) return; Rectangle thumb = ThumbRect; if (e.Y < 20) Value--; else if (e.Y >= Height - 20) Value++; else if (thumb.Contains(e.Location)) { dragging = true; dragOffset = e.Y - thumb.Y; Capture = true; } else Value += e.Y < thumb.Y ? -largeChange : largeChange; }
-    protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); if (!dragging || maximum == 0) return; Rectangle track = TrackRect, thumb = ThumbRect; int travel = Math.Max(1, track.Height - thumb.Height), offset = Math.Max(0, Math.Min(travel, e.Y - track.Y - dragOffset)); Value = (int)Math.Round(offset * (double)maximum / travel); }
-    protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); dragging = false; Capture = false; }
-    protected override void OnMouseWheel(MouseEventArgs e) { Value -= Math.Sign(e.Delta) * 3; base.OnMouseWheel(e); }
   }
 
   sealed class PixelLogBox : Control {
@@ -197,8 +172,8 @@ namespace AgentTrafficLightNative {
 
     void AddTaskSection(string name, List<AgentTask> tasks, Color color, int y, bool actionable, int initialOffset, Action<int> saveOffset) {
       var section = new PixelPage { Location = new Point(8, y), Size = new Size(592, 102), BackColor = PixelTheme.Paper };
-      section.Paint += delegate(object sender, PaintEventArgs e) { using (var ink = new Pen(PixelTheme.Ink, 3)) e.Graphics.DrawRectangle(ink, 1, 1, section.Width - 3, section.Height - 3); };
-      var header = new Label { Location = new Point(8, 2), Size = new Size(360, 24), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = color, Font = PixelTheme.TitleFont };
+      section.Paint += delegate(object sender, PaintEventArgs e) { using (var ink = new Pen(PixelTheme.Ink, 3)) { e.Graphics.DrawRectangle(ink, 1, 1, section.Width - 3, section.Height - 3);  } };
+      var header = new Label { Location = new Point(4, 2), Size = new Size(584, 24), AutoSize = false, TextAlign = ContentAlignment.MiddleCenter, BackColor = Color.Transparent, ForeColor = color, Font = PixelTheme.TitleFont };
       section.Controls.Add(header);
       if (actionable && tasks.Count > 0) {
         var dismissAll = new PixelButton { Text = "清除全部", Danger = true, Location = new Point(470, 2), Size = new Size(88, 24) };
@@ -211,7 +186,7 @@ namespace AgentTrafficLightNative {
       }
       var rows = new PixelPage { Location = new Point(4, 27), Size = new Size(562, 70), BackColor = PixelTheme.Paper };
       var scroll = new PixelScrollBar { Location = new Point(570, 27), Size = new Size(18, 70), AccessibleName = name + "任务滚动条" };
-      scroll.Maximum = Math.Max(0, tasks.Count - TaskRowsPerSection); scroll.LargeChange = TaskRowsPerSection; scroll.Visible = scroll.Maximum > 0;
+      scroll.Maximum = Math.Max(0, tasks.Count - TaskRowsPerSection); scroll.LargeChange = TaskRowsPerSection; scroll.Visible = true;
       int offset = Math.Max(0, Math.Min(scroll.Maximum, initialOffset)); saveOffset(offset); scroll.Value = offset;
       Action renderRows = null;
       renderRows = delegate {
@@ -219,7 +194,7 @@ namespace AgentTrafficLightNative {
         offset = scroll.Value; saveOffset(offset);
         int last = tasks.Count == 0 ? 0 : Math.Min(tasks.Count, offset + TaskRowsPerSection);
         header.Text = name + "  " + tasks.Count + (tasks.Count > TaskRowsPerSection ? "  ·  " + (offset + 1) + "-" + last + " / " + tasks.Count : "");
-        if (tasks.Count == 0) rows.Controls.Add(PixelTheme.Label(name == "待我处理" ? "当前没有需要处理的任务" : "当前没有正在运行的任务", new Point(8, 8), new Size(540, 46), false));
+        if (tasks.Count == 0) rows.Controls.Add(PixelTheme.Label(name == "待我处理" ? "当前没有需要处理的任务" : "当前没有正在运行的任务", new Point(0, 8), new Size(rows.Width, 46), false));
         else {
           int visibleRows = Math.Min(TaskRowsPerSection, tasks.Count - offset);
           for (int i = 0; i < visibleRows; i++) AddTaskRow(rows, tasks[offset + i], i * 35, actionable, rows.Width);

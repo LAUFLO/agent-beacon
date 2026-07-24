@@ -64,5 +64,6 @@ namespace AgentTrafficLightNative {
     public bool AdaptiveScanning = true;
     public int AttentionNotifyDelaySeconds = 0;
     public int LongRunningReminderMinutes = 0;
+    public string DismissedUpdateVersion = "";
   }
 }

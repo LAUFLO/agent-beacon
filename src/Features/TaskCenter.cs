@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -348,8 +348,8 @@ namespace AgentTrafficLightNative {
       };
       string project = ProjectName(task), phase = String.IsNullOrWhiteSpace(task.Phase) ? task.Detail : task.Phase;
       if (task.Progress >= 0) phase += "  " + task.Progress + "%";
-      row.Controls.Add(new Label { Text = task.Source + "  ·  " + project, Location = new Point(20, 5), Size = new Size(246, 20), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = PixelTheme.Ink, Font = PixelTheme.StrongFont });
-      row.Controls.Add(new Label { Text = phase, Location = new Point(20, 26), Size = new Size(246, 18), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = task.Status == State.Attention ? Color.FromArgb(182, 122, 0) : task.Stalled ? PixelTheme.Muted : PixelTheme.Green, Font = PixelTheme.TextFont });
+      row.Controls.Add(new Label { Text = task.Source + "  ·  " + project, Location = new Point(20, 5), Size = new Size(246, 20), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = PixelTheme.Ink, Font = PixelTheme.StrongFont, AutoEllipsis = true });
+      row.Controls.Add(new Label { Text = phase, Location = new Point(20, 26), Size = new Size(246, 18), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = task.Status == State.Attention ? Color.FromArgb(182, 122, 0) : task.Stalled ? PixelTheme.Muted : PixelTheme.Green, Font = PixelTheme.TextFont, AutoEllipsis = true });
       var open = new PixelButton { Text = "打开任务", Active = task.Status == State.Attention, Location = new Point(280, 9), Size = new Size(104, 34) };
       open.Click += delegate { Close(); if (openTask != null) openTask(task); }; row.Controls.Add(open); Controls.Add(row);
     }

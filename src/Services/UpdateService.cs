@@ -18,6 +18,7 @@ namespace AgentTrafficLightNative {
     public string DownloadUrl;
     public string Sha256;
     public string ReleaseUrl;
+    public string Body;
   }
 
   static class UpdateService {
@@ -46,7 +47,7 @@ namespace AgentTrafficLightNative {
       string hash = digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase) ? digest.Substring(7) : "";
       if (String.IsNullOrWhiteSpace(hash) && !String.IsNullOrWhiteSpace(hashUrl)) using (var client = Client()) hash = ParseHash(client.DownloadString(hashUrl));
       if (!IsHash(hash)) throw new InvalidDataException("新版本缺少可验证的 SHA-256，已停止更新。");
-      return new UpdateInfo { Version = remote.ToString(), Tag = tag, DownloadUrl = download, Sha256 = hash.ToUpperInvariant(), ReleaseUrl = S(release, "html_url", "") };
+      return new UpdateInfo { Version = remote.ToString(), Tag = tag, DownloadUrl = download, Sha256 = hash.ToUpperInvariant(), ReleaseUrl = S(release, "html_url", ""), Body = S(release, "body", "") };
     }
 
     public static string Download(UpdateInfo update) { return Download(update, null); }
