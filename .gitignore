@@ -2,5 +2,23 @@
 /Agent-Beacon-*.exe
 /Agent-Beacon-*.sha256
 /integrations/Agent-Beacon-MCP.exe
+/integrations/Agent-Beacon-Codex-Hook.exe
 /artifacts/
 /tools/.cache/
+
+# Internal tooling
+/.omo/
+
+# Design docs
+/docs/
+
+# Marketing & social assets
+/social/
+
+# Temp / unknown files
+/80
+/81
+
+# Python tools
+/tools/__pycache__/
+/tools/generate_pixel_logo_v2.py
