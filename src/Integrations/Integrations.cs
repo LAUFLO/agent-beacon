@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -95,11 +95,171 @@ namespace AgentTrafficLightNative {
       if (IsTraeMcpConnected()) return "■ 最近通信" + (time.Length > 0 ? " " + time : "");
       return seen > 0 ? "■ 已失联 " + time : "■ 已配置，待通信";
     }
+    // --- Codex Hook ---
+
+    static string CodexHookDirectory { get { return Path.Combine(Util.IntegrationDir); } }
+    static string CodexHookExecutable { get { return Path.Combine(CodexHookDirectory, "Agent-Beacon-Codex-Hook.exe"); } }
+    static string CodexHookConfigPath { get { return Path.Combine(Util.Home, ".codex", "hooks.json"); } }
+
+    static string ReadResourceText(string resourceName) {
+      using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(resourceName))
+      using (var reader = new StreamReader(stream, Encoding.UTF8))
+        return reader.ReadToEnd();
+    }
+
+    static void ExtractCodexHookHelper() {
+      Directory.CreateDirectory(CodexHookDirectory);
+      try {
+        Extract("codex-hook.exe", CodexHookExecutable);
+      } catch (Exception ex) {
+        DiagnosticsHub.RecordError("Codex hook helper extraction: " + ex.Message);
+      }
+    }
+
+    public static bool IsCodexHookInstalled() {
+      string configPath = CodexHookConfigPath;
+      if (!File.Exists(configPath) || !File.Exists(CodexHookExecutable)) return false;
+      try {
+        string text = File.ReadAllText(configPath, Encoding.UTF8);
+        return text.IndexOf("codex-hook", StringComparison.OrdinalIgnoreCase) >= 0;
+      } catch {
+        return false;
+      }
+    }
+
+    public static void RefreshCodexHook() {
+      try {
+        if (IsCodexHookInstalled()) {
+          ExtractCodexHookHelper();
+          EnsureCodexHookConfig();
+        }
+      } catch { }
+    }
+
+    static bool EnsureCodexHookConfig() {
+      string configPath = CodexHookConfigPath;
+      string helperPath = CodexHookExecutable;
+
+      string template;
+      try {
+        template = ReadResourceText("codex-hooks.json");
+      } catch {
+        DiagnosticsHub.RecordError("Codex hook: cannot read embedded template");
+        return false;
+      }
+
+      string config = template.Replace("HELPER_PATH", helperPath);
+
+      string existing = null;
+      IDictionary<string, object> existingRoot = null;
+      if (File.Exists(configPath)) {
+        try {
+          existing = File.ReadAllText(configPath, Encoding.UTF8);
+          existingRoot = Util.Json.DeserializeObject(existing) as IDictionary<string, object>;
+        } catch { }
+      }
+
+      bool needsUpdate = true;
+      if (existingRoot != null) {
+        try {
+          var current = Util.Json.DeserializeObject(config) as IDictionary<string, object>;
+          string existingSerialized = Util.Json.Serialize(existingRoot);
+          string currentSerialized = Util.Json.Serialize(current);
+          needsUpdate = !String.Equals(existingSerialized, currentSerialized, StringComparison.Ordinal);
+        } catch {
+          needsUpdate = true;
+        }
+      }
+
+      if (!needsUpdate) return true;
+
+      if (File.Exists(configPath)) {
+        try {
+          File.Copy(configPath, configPath + ".agent-beacon.bak", true);
+        } catch { }
+      }
+
+      Directory.CreateDirectory(Path.GetDirectoryName(configPath));
+      File.WriteAllText(configPath, config, new UTF8Encoding(false));
+      return true;
+    }
+
+    public static string InstallCodexHook() {
+      try {
+        ExtractCodexHookHelper();
+        if (!EnsureCodexHookConfig())
+          return "安装失败：无法写入 Hook 配置";
+
+        string path = CodexHookConfigPath;
+        string message = "Codex Hook 已安装。\n\n"
+          + "首次安装后，请在 Codex 中执行以下步骤：\n"
+          + "1. 输入 /hooks 打开 Hook 浏览器\n"
+          + "2. 检查新出现的 Agent Beacon Hook，点击信任\n"
+          + "3. 确认所有事件（SessionStart、PreToolUse、\n"
+          + "   PermissionRequest、PostToolUse、\n"
+          + "   UserPromptSubmit、Stop）均已启用\n\n"
+          + "Hook 配置文件：\n" + path;
+
+        Process[] codex = Process.GetProcessesByName("codex");
+        if (codex.Length > 0) {
+          message += "\n\n检测到 Codex 正在运行，建议重启 Codex 使 Hook 生效。";
+        }
+        foreach (Process p in codex) p.Dispose();
+
+        return message;
+      } catch (Exception ex) {
+        return "安装 Codex Hook 失败：" + ex.Message;
+      }
+    }
+
+    public static bool IsCodexHookHealthy() {
+      try {
+        if (!Directory.Exists(Util.BridgeDir)) return false;
+        long now = Util.Now();
+        foreach (string file in Directory.GetFiles(Util.BridgeDir, "codex-hook-*.json")) {
+          try {
+            var row = Util.Json.DeserializeObject(File.ReadAllText(file, Encoding.UTF8)) as IDictionary<string, object>;
+            if (row == null || Util.S(row, "source", "") != "Codex" || Util.S(row, "integration", "") != "hook") continue;
+            long updated = Util.N(row, "updatedAt", 0);
+            if (now - updated <= 10 * 60 * 1000) return true;
+          } catch { }
+        }
+        return false;
+      } catch {
+        return false;
+      }
+    }
+
+    public static string CodexHookStatus() {
+      if (!IsCodexHookInstalled()) return "未配置";
+      if (IsCodexHookHealthy()) {
+        long latest = 0;
+        try {
+          foreach (string file in Directory.GetFiles(Util.BridgeDir, "codex-hook-*.json")) {
+            try {
+              var row = Util.Json.DeserializeObject(File.ReadAllText(file, Encoding.UTF8)) as IDictionary<string, object>;
+              if (row != null && Util.S(row, "source", "") == "Codex" && Util.S(row, "integration", "") == "hook")
+                latest = Math.Max(latest, Util.N(row, "updatedAt", 0));
+            } catch { }
+          }
+        } catch { }
+        string time = latest > 0 ? DateTimeOffset.FromUnixTimeMilliseconds(latest).ToLocalTime().ToString("HH:mm") : "";
+        return "正常" + (time.Length > 0 ? " · " + time : "");
+      }
+      Process[] codex = Process.GetProcessesByName("codex");
+      bool codexRunning = codex.Length > 0;
+      foreach (Process p in codex) p.Dispose();
+      if (codexRunning) return "等待通信";
+      return "已安装，待 Codex 启动";
+    }
+
+    // --- End of Codex Hook ---
     public static string HealthSummary() {
       var rows = new List<string>();
       rows.Add("TRAE: " + (HasTraeMcpArtifacts() ? (IsTraeMcpPrepared() ? (IsTraeMcpConnected() ? "正常" : "配置正常，当前未通信") : "需要修复") : "未配置"));
       rows.Add("Claude Code: " + (IsClaudeInstalled() ? "正常" : "未配置"));
       rows.Add("OpenCode: " + (IsOpenCodeInstalled() ? "正常" : "未配置"));
+      rows.Add("Codex: " + (IsCodexHookInstalled() ? CodexHookStatus() : "未配置"));
       return String.Join(Environment.NewLine, rows.ToArray());
     }
     public static string RepairConfiguredIntegrations() {
@@ -121,6 +281,11 @@ namespace AgentTrafficLightNative {
       if (File.Exists(openCodePlugin)) {
         string result = InstallOpenCode(); bool ok = IsOpenCodeInstalled(); changed = changed || ok; rows.Add("OpenCode: " + (ok ? "插件已刷新" : result));
       } else rows.Add("OpenCode: 未配置，已跳过");
+
+      string codexConfig = Path.Combine(Util.Home, ".codex", "hooks.json");
+      if (File.Exists(codexConfig) || File.Exists(Path.Combine(Util.IntegrationDir, "Agent-Beacon-Codex-Hook.exe"))) {
+        string result = InstallCodexHook(); bool ok = IsCodexHookInstalled(); changed = changed || ok; rows.Add("Codex: " + (ok ? "已检查并修复" : result));
+      } else rows.Add("Codex: 未配置，跳过");
 
       return "集成健康检查完成" + (changed ? "，已自动修复可处理的问题。" : "，未发现需要自动修复的问题。") + Environment.NewLine + Environment.NewLine + String.Join(Environment.NewLine, rows.ToArray());
     }

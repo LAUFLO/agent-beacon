@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -80,14 +80,21 @@ namespace AgentTrafficLightNative {
     }
     static class CodexAutomationConditions {
       public static readonly Condition Buttons = new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button);
-      public static readonly Condition Prompts = new OrCondition(new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text), new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Custom));
+      public static readonly Condition Prompts = new OrCondition(
+        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text),
+        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Custom),
+        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Group),
+        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Pane),
+        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document)
+      );
     }
     public static bool IsCodexApprovalPromptText(string text) {
-      string value = (text ?? "").Trim(); if (value.Length == 0 || value.Length > 240) return false;
+      string value = (text ?? "").Trim(); if (value.Length == 0 || value.Length > 4096) return false;
+      value = Regex.Replace(value, "\\s+", " ");
       bool chineseApproval = value.IndexOf("允许", StringComparison.Ordinal) >= 0
         && (value.IndexOf("ChatGPT", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("Codex", StringComparison.OrdinalIgnoreCase) >= 0)
-        && Regex.IsMatch(value, "编辑|运行|执行|访问");
-      return chineseApproval || Regex.IsMatch(value, "^(?:是否|要不要)允许|需要(?:你|您).{0,12}(?:确认|批准|选择)|do you want to allow|allow\\s+.{1,80}\\s+to\\s+.{1,120}\\??$|approval required|requires your approval", RegexOptions.IgnoreCase);
+        && Regex.IsMatch(value, "编辑|运行|执行|访问|安装|写入|修改|删除");
+      return chineseApproval || Regex.IsMatch(value, "(?:^|(?:终端|terminal)\\s+)(?:是否|要不要)允许|需要(?:你|您).{0,12}(?:确认|批准|选择)|(?:^|terminal\\s+)do you want to allow|allow\\s+.{1,80}\\s+to\\s+.{1,120}\\??$|approval required|requires your approval", RegexOptions.IgnoreCase);
     }
     public static bool IsCodexApprovalActionText(string text) {
       string value = (text ?? "").Trim();
@@ -98,6 +105,12 @@ namespace AgentTrafficLightNative {
       // Enabled approval controls are still live in that state and must remain detectable.
       return isEnabled;
     }
+    public static bool ShouldConsiderCodexApprovalPromptElement(bool isOffscreen, bool isEnabled) {
+      // Static Electron text can be disabled even while its paired approval button is live.
+      // Safety comes from requiring a separate enabled affirmative action in the same Codex root.
+      return true;
+    }
+    public static int CodexAutomationScanStart(int count, int limit) { return Math.Max(0, count - Math.Max(0, limit)); }
     static bool CodexAutomationRootNeedsAttention(AutomationElement root) {
       if (root == null) return false;
       var request = new CacheRequest();
@@ -105,15 +118,15 @@ namespace AgentTrafficLightNative {
       request.Add(AutomationElement.NameProperty); request.Add(AutomationElement.HelpTextProperty); request.Add(AutomationElement.ItemStatusProperty); request.Add(AutomationElement.IsEnabledProperty); request.Add(AutomationElement.IsOffscreenProperty);
       using (request.Activate()) {
         bool allow = false;
-        var buttons = root.FindAll(TreeScope.Descendants, CodexAutomationConditions.Buttons); int buttonLimit = Math.Min(buttons.Count, 200);
-        for (int i = 0; i < buttonLimit; i++) try {
+        var buttons = root.FindAll(TreeScope.Descendants, CodexAutomationConditions.Buttons); int buttonStart = CodexAutomationScanStart(buttons.Count, 200);
+        for (int i = buttons.Count - 1; i >= buttonStart; i--) try {
           var cached = buttons[i].Cached; if (!ShouldConsiderCodexApprovalElement(cached.IsOffscreen, cached.IsEnabled)) continue;
           if (IsCodexApprovalActionText(cached.Name) && !Regex.IsMatch(cached.Name ?? "", "拒绝|不允许|取消|deny|reject|cancel", RegexOptions.IgnoreCase)) { allow = true; break; }
         } catch { }
         if (!allow) return false;
-        var prompts = root.FindAll(TreeScope.Descendants, CodexAutomationConditions.Prompts); int promptLimit = Math.Min(prompts.Count, 600);
-        for (int i = 0; i < promptLimit; i++) try {
-          var cached = prompts[i].Cached; if (!ShouldConsiderCodexApprovalElement(cached.IsOffscreen, cached.IsEnabled)) continue;
+        var prompts = root.FindAll(TreeScope.Descendants, CodexAutomationConditions.Prompts); int promptStart = CodexAutomationScanStart(prompts.Count, 600);
+        for (int i = prompts.Count - 1; i >= promptStart; i--) try {
+          var cached = prompts[i].Cached; if (!ShouldConsiderCodexApprovalPromptElement(cached.IsOffscreen, cached.IsEnabled)) continue;
           if (IsCodexApprovalPromptText(String.Join(" ", new[] { cached.Name ?? "", cached.HelpText ?? "", cached.ItemStatus ?? "" }))) return true;
         } catch { }
         return false;
@@ -136,7 +149,7 @@ namespace AgentTrafficLightNative {
         try {
           process = Process.GetProcessById(processId);
           if (process.MainWindowHandle != IntPtr.Zero) { var direct = AutomationElement.FromHandle(process.MainWindowHandle); if (direct != null) directRoots.Add(direct); }
-          else conditions.Add(new PropertyCondition(AutomationElement.ProcessIdProperty, process.Id));
+          conditions.Add(new PropertyCondition(AutomationElement.ProcessIdProperty, process.Id));
         } catch { } finally { if (process != null) process.Dispose(); }
       }
       foreach (AutomationElement root in directRoots) try { if (CodexAutomationRootNeedsAttention(root)) return FinishCodexUiScan(true, urgent, now); } catch { }
@@ -146,6 +159,31 @@ namespace AgentTrafficLightNative {
         for (int i = 0; i < windows.Count; i++) try { if (CodexAutomationRootNeedsAttention(windows[i])) return FinishCodexUiScan(true, urgent, now); } catch { }
       } catch { }
       return FinishCodexUiScan(false, urgent, now);
+    }
+    /// <summary>
+    /// Detects a PowerShell/pwsh approval window for Codex terminal confirmations.
+    /// This is a fallback layer when Codex Hook is not installed or trusted.
+    /// Only matches windows whose title contains "Codex" and "确认" simultaneously
+    /// to avoid false positives from ordinary PowerShell windows.
+    /// </summary>
+    public static bool CodexHasPowerShellApprovalWindow() {
+      try {
+        foreach (var process in Process.GetProcesses()) {
+          try {
+            string name = process.ProcessName;
+            if (!"powershell".Equals(name, StringComparison.OrdinalIgnoreCase)
+                && !"pwsh".Equals(name, StringComparison.OrdinalIgnoreCase))
+              continue;
+            string title = process.MainWindowTitle;
+            if (!String.IsNullOrWhiteSpace(title)
+                && title.IndexOf("Codex", StringComparison.OrdinalIgnoreCase) >= 0
+                && title.IndexOf("确认", StringComparison.Ordinal) >= 0) {
+              return true;
+            }
+          } finally { process.Dispose(); }
+        }
+      } catch { }
+      return false;
     }
     static void AddCanonical(HashSet<string> result, string name) {
       if (name.Equals("trae", StringComparison.OrdinalIgnoreCase)) result.Add("TRAE");

@@ -7,7 +7,7 @@ namespace AgentTrafficLightNative {
   static class CodexEventCompatibility {
     static readonly HashSet<string> ToolCalls = new HashSet<string>(new[] { "custom_tool_call", "function_call" }, StringComparer.OrdinalIgnoreCase);
     static readonly HashSet<string> ToolOutputs = new HashSet<string>(new[] { "custom_tool_call_output", "function_call_output" }, StringComparer.OrdinalIgnoreCase);
-    static readonly HashSet<string> ExecNames = new HashSet<string>(new[] { "exec", "exec_command", "shell", "run_command" }, StringComparer.OrdinalIgnoreCase);
+    static readonly HashSet<string> ExecNames = new HashSet<string>(new[] { "exec", "exec_command", "shell", "run_command", "bash" }, StringComparer.OrdinalIgnoreCase);
 
     public static bool IsToolCall(string payloadType) { return ToolCalls.Contains(payloadType ?? ""); }
     public static bool IsToolOutput(string payloadType) { return ToolOutputs.Contains(payloadType ?? ""); }

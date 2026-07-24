@@ -1,0 +1,77 @@
+{
+  "description": "Agent Beacon: track Codex lifecycle via hooks (replaces JSONL parsing)",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "commandWindows": "HELPER_PATH",
+            "timeout": 5,
+            "statusMessage": "Agent Beacon: session started"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "commandWindows": "HELPER_PATH",
+            "timeout": 5,
+            "statusMessage": "Agent Beacon: tool executing"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "commandWindows": "HELPER_PATH",
+            "timeout": 5,
+            "statusMessage": "Agent Beacon: waiting for approval"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "commandWindows": "HELPER_PATH",
+            "timeout": 5,
+            "statusMessage": "Agent Beacon: tool completed"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "commandWindows": "HELPER_PATH",
+            "timeout": 5,
+            "statusMessage": "Agent Beacon: user prompt submitted"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "commandWindows": "HELPER_PATH",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

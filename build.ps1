@@ -18,15 +18,21 @@ $helperArguments = @('/nologo','/target:exe','/optimize+','/platform:anycpu',"/o
 & $compiler $helperArguments
 if ($LASTEXITCODE -ne 0) { throw 'TRAE MCP Helper compilation failed.' }
 
+$codexHook = Join-Path $PSScriptRoot 'integrations\Agent-Beacon-Codex-Hook.exe'
+$codexHookArguments = @('/nologo','/target:exe','/optimize+','/platform:anycpu',"/out:$codexHook",'/reference:System.dll','/reference:System.Core.dll','/reference:System.Web.Extensions.dll') + $deterministic + @((Join-Path $PSScriptRoot 'src\Integrations\CodexHookHost.cs'))
+& $compiler $codexHookArguments
+if ($LASTEXITCODE -ne 0) { throw 'Codex Hook compilation failed.' }
+
 $icon = Join-Path $PSScriptRoot 'assets\Agent-Beacon.ico'
 $claude = Join-Path $PSScriptRoot 'integrations\claude-hook.cjs'
 $openCode = Join-Path $PSScriptRoot 'integrations\opencode-plugin.js'
+$codexHooksJson = Join-Path $PSScriptRoot 'integrations\codex-hooks.json'
 $appArguments = @(
   '/nologo','/target:winexe','/optimize+','/platform:x64',"/out:$output","/win32icon:$icon",
   '/reference:System.dll','/reference:System.Core.dll','/reference:System.Drawing.dll','/reference:System.Windows.Forms.dll','/reference:System.Web.Extensions.dll',
   '/reference:C:\Windows\Microsoft.NET\assembly\GAC_MSIL\UIAutomationClient\v4.0_4.0.0.0__31bf3856ad364e35\UIAutomationClient.dll',
   '/reference:C:\Windows\Microsoft.NET\assembly\GAC_MSIL\UIAutomationTypes\v4.0_4.0.0.0__31bf3856ad364e35\UIAutomationTypes.dll',
-  "/resource:$claude,claude-hook.cjs","/resource:$openCode,opencode-plugin.js","/resource:$helper,trae-mcp-host.exe"
+  "/resource:$claude,claude-hook.cjs","/resource:$openCode,opencode-plugin.js","/resource:$helper,trae-mcp-host.exe","/resource:$codexHook,codex-hook.exe","/resource:$codexHooksJson,codex-hooks.json"
 ) + $deterministic + $sources
 & $compiler $appArguments
 if ($LASTEXITCODE -ne 0) { throw 'Agent Beacon compilation failed.' }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -29,10 +29,10 @@ namespace AgentTrafficLightNative {
         int index = i; var choice = new PixelButton { Text = scaleLabels[i], Location = new Point(100 + i * 91, 175), Size = new Size(83, 30), Active = settings.LampScale == scales[i] }; scaleButtons.Add(choice);
         choice.Click += delegate { settings.LampScale = scales[index]; foreach (var item in scaleButtons) item.Active = false; choice.Active = true; Program.SaveSettings(settings); scaleChanged(settings.LampScale); }; Controls.Add(choice);
       }
-      var traeState = StatusLabel(22, 260, 188); var ruleState = StatusLabel(220, 260, 188); var claudeState = StatusLabel(22, 322, 188); var openCodeState = StatusLabel(220, 322, 188); Controls.Add(traeState); Controls.Add(ruleState); Controls.Add(claudeState); Controls.Add(openCodeState);
-      Action refresh = delegate { SetTraeStatus(traeState); ruleState.Text = "■ 粘贴到全局规则"; ruleState.ForeColor = PixelTheme.Muted; SetStatus(claudeState, Integration.IsClaudeInstalled()); SetStatus(openCodeState, Integration.IsOpenCodeInstalled()); }; refresh();
+      var traeState = StatusLabel(22, 260, 188); var codexState = StatusLabel(220, 260, 188); var claudeState = StatusLabel(22, 322, 188); var openCodeState = StatusLabel(220, 322, 188); Controls.Add(traeState); Controls.Add(codexState); Controls.Add(claudeState); Controls.Add(openCodeState);
+      Action refresh = delegate { SetTraeStatus(traeState); SetCodexStatus(codexState); SetStatus(claudeState, Integration.IsClaudeInstalled()); SetStatus(openCodeState, Integration.IsOpenCodeInstalled()); }; refresh();
       var trae = new PixelButton { Text = "复制 TRAE MCP", Location = new Point(22, 226), Size = new Size(188, 32) }; trae.Click += delegate { string message = Integration.InstallTraeMcp(); refresh(); PixelDialog.Show(this, message, "TRAE MCP", PixelDialogButtons.Ok); }; Controls.Add(trae);
-      var rule = new PixelButton { Text = "复制 TRAE 规则", Location = new Point(220, 226), Size = new Size(188, 32) }; rule.Click += delegate { string message = Integration.CopyTraeRule(); PixelDialog.Show(this, message, "TRAE 状态规则", PixelDialogButtons.Ok); }; Controls.Add(rule);
+      var codex = new PixelButton { Text = "安装 CODEX HOOK", Location = new Point(220, 226), Size = new Size(188, 32) }; codex.Click += delegate { string message = Integration.InstallCodexHook(); refresh(); PixelDialog.Show(this, message, "CODEX HOOK", PixelDialogButtons.Ok); }; Controls.Add(codex);
       var claude = new PixelButton { Text = "安装 CLAUDE HOOKS", Location = new Point(22, 288), Size = new Size(188, 32) }; claude.Click += delegate { string message = Integration.InstallClaude(); refresh(); PixelDialog.Show(this, message, "CLAUDE HOOKS", PixelDialogButtons.Ok); }; Controls.Add(claude);
       var openCode = new PixelButton { Text = "安装 OPENCODE 插件", Location = new Point(220, 288), Size = new Size(188, 32) }; openCode.Click += delegate { string message = Integration.InstallOpenCode(); refresh(); PixelDialog.Show(this, message, "OPENCODE 插件", PixelDialogButtons.Ok); }; Controls.Add(openCode);
       var repair = new PixelButton { Text = "检查 / 修复集成", Location = new Point(22, 350), Size = new Size(188, 34) }; repair.Click += delegate { string message = Integration.RepairConfiguredIntegrations(); refresh(); PixelDialog.Show(this, message, "集成健康检查", PixelDialogButtons.Ok); }; Controls.Add(repair);
@@ -63,6 +63,7 @@ namespace AgentTrafficLightNative {
     Label StatusLabel(int x, int y, int width) { return new Label { AutoSize = false, Location = new Point(x, y), Size = new Size(width, 24), BackColor = Color.Transparent, Font = PixelTheme.StrongFont, TextAlign = ContentAlignment.MiddleCenter }; }
     void SetStatus(Label label, bool installed) { label.Text = installed ? "■ 已安装" : "■ 未安装"; label.ForeColor = installed ? PixelTheme.Green : PixelTheme.Yellow; }
     void SetTraeStatus(Label label) { label.Text = Integration.TraeMcpStatus(); label.ForeColor = Integration.IsTraeMcpReadyAndConnected() ? PixelTheme.Green : PixelTheme.Yellow; }
+    void SetCodexStatus(Label label) { label.Text = Integration.CodexHookStatus(); label.ForeColor = Integration.IsCodexHookHealthy() ? PixelTheme.Green : (Integration.IsCodexHookInstalled() ? PixelTheme.Yellow : PixelTheme.Muted); }
     protected override void OnPaint(PaintEventArgs e) {
       Graphics g = e.Graphics; PixelTheme.PaintWindow(g, Width, Height, 430);
       using (var rule = new SolidBrush(PixelTheme.Ink)) { g.FillRectangle(rule, 14, 112, 402, 3); g.FillRectangle(rule, 14, 166, 402, 3); g.FillRectangle(rule, 14, 217, 402, 3); g.FillRectangle(rule, 14, 342, 402, 3); }

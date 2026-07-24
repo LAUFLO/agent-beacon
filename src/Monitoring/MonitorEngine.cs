@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -44,6 +44,31 @@ namespace AgentTrafficLightNative {
       foreach (var file in codexFiles) all.AddRange(CachedCodex(file, ref filesRead));
       foreach (var file in claudeFiles) all.AddRange(Cached(file, ParseClaude, ref filesRead));
       all.AddRange(Bridge(ref filesRead));
+      // PowerShell approval window fallback (layer 3 in layered signal strategy).
+      // Only activates when no Codex Hook attention is present.
+      bool hasHookAttention = all.Exists(t =>
+        t.Source == "Codex"
+        && t.Status == State.Attention
+        && t.Id != null
+        && t.Id.StartsWith("codex-hook:", StringComparison.OrdinalIgnoreCase));
+      if (!hasHookAttention && AgentProcesses.CodexHasPowerShellApprovalWindow()) {
+        long now = Util.Now();
+        all.Add(new AgentTask {
+          Id = "codex-powershell-fallback",
+          Source = "Codex",
+          SessionId = "powershell-fallback",
+          Title = "Codex 任务",
+          Status = State.Attention,
+          Detail = "检测到终端确认窗口",
+          Phase = "等待确认",
+          Evidence = "进程检测 - PowerShell 确认窗口",
+          Cwd = "",
+          StartedAt = now,
+          UpdatedAt = now,
+          LastActivityAt = now,
+          ReliableStart = true
+        });
+      }
       all.Sort(delegate(AgentTask a, AgentTask b) {
         int pa = a.Status == State.Attention ? 0 : a.Status == State.Running ? 1 : 2;
         int pb = b.Status == State.Attention ? 0 : b.Status == State.Running ? 1 : 2;
@@ -264,16 +289,21 @@ namespace AgentTrafficLightNative {
     List<AgentTask> ParseBridge(string file, long mtime) {
       var result = new List<AgentTask>(); IDictionary<string, object> row;
       try { row = Util.Json.DeserializeObject(File.ReadAllText(file, Encoding.UTF8)) as IDictionary<string, object>; } catch { return result; }
-      string source = Util.S(row, "source", ""); if (source != "TRAE" && source != "Claude Code" && source != "OpenCode") return result;
+      string source = Util.S(row, "source", ""); if (source != "Codex" && source != "TRAE" && source != "Claude Code" && source != "OpenCode") return result;
       if (source == "TRAE" && (!String.Equals(Util.S(row, "integration", ""), "mcp", StringComparison.OrdinalIgnoreCase) || !Util.S(row, "id", "").StartsWith("trae-mcp:", StringComparison.OrdinalIgnoreCase))) return result;
       string status = Util.S(row, "status", ""); if (status != State.Running && status != State.Attention && status != State.Complete) return result;
       string sid = source == "OpenCode" ? Util.S(row, "sessionId", "") : Util.S(row, "sessionId", Util.S(row, "id", "")); if (sid.Length == 0) return result;
+      // Codex hook tasks use their unique id as sessionId to avoid LogicalKey collision with JSONL tasks in Collapse().
+      if (source == "Codex" && String.Equals(Util.S(row, "integration", ""), "hook", StringComparison.OrdinalIgnoreCase)) {
+        sid = Util.S(row, "id", sid);
+      }
       if ((source == "OpenCode" || source == "TRAE") && (String.Equals(sid, "opencode-session", StringComparison.OrdinalIgnoreCase) || !Regex.IsMatch(sid, "^[a-z0-9][a-z0-9_.:-]{2,127}$", RegexOptions.IgnoreCase))) return result;
       long updated = Util.N(row, "updatedAt", mtime);
-      string evidence = source == "TRAE" ? "TRAE 本地 MCP 事件" : source == "OpenCode" ? "OpenCode Plugin 事件" : "Claude Hook 事件";
+      string evidence = source == "TRAE" ? "TRAE 本地 MCP 事件" : source == "OpenCode" ? "OpenCode Plugin 事件" : source == "Codex" ? "Codex Hook 事件" : "Claude Hook 事件";
       int progress = -1; Int32.TryParse(Util.S(row, "progress", "-1"), out progress); if (progress < 0 || progress > 100) progress = -1;
       var task = new AgentTask { Id = Util.S(row, "id", source + ":" + sid), Source = source, SessionId = sid, Title = Util.Clean(Util.S(row, "title", ""), source + " 任务"), Status = status, Detail = Util.Clean(Util.S(row, "detail", ""), status == State.Complete ? "任务已完成" : "正在执行"), Evidence = evidence, Cwd = Util.S(row, "cwd", ""), Phase = Util.Clean(Util.S(row, "phase", ""), ""), Progress = progress, StartedAt = Util.N(row, "startedAt", updated), UpdatedAt = updated, LastActivityAt = Util.N(row, "lastActivityAt", updated), ExplicitStart = source == "TRAE" || Util.S(row, "explicitStart", "").Equals("True", StringComparison.OrdinalIgnoreCase), ReliableStart = source == "TRAE" || Util.S(row, "reliableStart", "").Equals("True", StringComparison.OrdinalIgnoreCase) };
       if (source != "TRAE" && task.Status == State.Running && Util.Now() - updated > 1800000) { task.Status = State.Complete; task.Detail = "超过 30 分钟无事件，视为空闲"; }
+      if (source != "TRAE" && task.Status == State.Attention && Util.Now() - updated > 1800000) { task.Status = State.Complete; task.Detail = "等待确认超过 30 分钟无更新，视为结束"; }
       result.Add(task); return result;
     }
   }
