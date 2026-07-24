@@ -413,14 +413,14 @@ $focusTask = $windowType.GetMethods([Reflection.BindingFlags]'Static,NonPublic,P
 if (-not $matchesWindow.Invoke($null, @('Codex','ChatGPT','')) -or -not $matchesWindow.Invoke($null, @('TRAE','TRAE','')) -or -not $focusTask) { throw 'Agent window/task matching rules failed.' }
 $updateType = $assembly.GetType('AgentTrafficLightNative.UpdateService')
 $safeTarget = $updateType.GetMethod('IsSafeUpdateTarget', [Reflection.BindingFlags]'Static,NonPublic,Public')
-if (-not $safeTarget.Invoke($null, @('D:\Agent-Beacon-1.6.3.exe')) -or $safeTarget.Invoke($null, @('C:\Windows\System32\notepad.exe'))) { throw 'Automatic update target validation failed.' }
+if (-not $safeTarget.Invoke($null, @('D:\Agent-Beacon-1.6.4.exe')) -or $safeTarget.Invoke($null, @('C:\Windows\System32\notepad.exe'))) { throw 'Automatic update target validation failed.' }
 $parseRelease = $updateType.GetMethod('ParseRelease', [Reflection.BindingFlags]'Static,NonPublic,Public')
 $releaseJson = '{"tag_name":"v9.9.9","html_url":"https://github.com/LAUFLO/agent-beacon/releases/tag/v9.9.9","assets":[{"name":"Agent-Beacon-9.9.9.exe","browser_download_url":"https://example.invalid/Agent-Beacon-9.9.9.exe","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}'
 $releaseInfo = $parseRelease.Invoke($null, @($releaseJson))
 $updateInfoType = $assembly.GetType('AgentTrafficLightNative.UpdateInfo')
 if ($updateInfoType.GetField('Version').GetValue($releaseInfo) -ne '9.9.9' -or $updateInfoType.GetField('Sha256').GetValue($releaseInfo).Length -ne 64) { throw 'GitHub release asset/digest parsing failed.' }
 $appInfoType = $assembly.GetType('AgentTrafficLightNative.AppInfo')
-if ($appInfoType.GetField('Version', [Reflection.BindingFlags]'Static,NonPublic,Public').GetRawConstantValue() -ne '1.6.3') { throw 'Application version metadata is not 1.6.3.' }
+if ($appInfoType.GetField('Version', [Reflection.BindingFlags]'Static,NonPublic,Public').GetRawConstantValue() -ne '1.6.4') { throw 'Application version metadata is not 1.6.3.' }
 Write-Host 'PASS click-to-focus matching, safe GitHub updater and centralized version metadata'
 
 $integrationType = $assembly.GetType('AgentTrafficLightNative.Integration')
